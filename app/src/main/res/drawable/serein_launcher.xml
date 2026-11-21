@@ -1,0 +1,6 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/serein_icon_background" />
+    <foreground>
+        <inset android:drawable="@drawable/serein_logo" android:inset="22dp" />
+    </foreground>
+</adaptive-icon>

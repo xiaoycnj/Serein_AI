@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application' version '8.13.2'
+}
+
+android {
+    namespace 'app.serein.chat'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'app.serein.chat'
+        minSdk 33
+        targetSdk 36
+        versionCode 3
+        versionName '0.0.3-alpha'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,9 @@
+<resources>
+    <style name="SereinTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#F8FAF7</item>
+        <item name="android:windowSplashScreenBackground">#F8FAF7</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/serein_launcher</item>
+        <item name="android:colorAccent">#235543</item>
+    </style>
+</resources>
