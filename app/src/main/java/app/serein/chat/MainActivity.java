@@ -28,6 +28,7 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
+import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -75,7 +76,7 @@ public final class MainActivity extends Activity {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
             new Section("appearance", "外观", "主题与动效", R.drawable.ic_sun),
             new Section("plugins", "自定义插件", "上下文压缩与模型路由", R.drawable.ic_puzzle),
-            new Section("about", "关于", "Alpha 0.0.5", R.drawable.ic_info),
+            new Section("about", "关于", "Alpha 0.0.6", R.drawable.ic_info),
             new Section("policy", "相关政策", "本机数据", R.drawable.ic_shield),
             new Section("licenses", "开源声明", "依赖与素材", R.drawable.ic_file),
     };
@@ -323,7 +324,9 @@ public final class MainActivity extends Activity {
     }
 
     private String[] effortLabels(Providers.Choice choice) {
-        if (choice == null || choice.model().reasoning().equals("none")) return new String[]{"默认"};
+        if (choice == null || choice.provider().anthropicMessages() || choice.model().reasoning().equals("none")) {
+            return new String[]{"默认"};
+        }
         if (choice.model().reasoning().equals("deepseek")) return new String[]{"默认", "高", "最高"};
         return new String[]{"默认", "低", "中", "高"};
     }
@@ -492,7 +495,7 @@ public final class MainActivity extends Activity {
         liveSource = source;
         if (liveStatus != null) liveStatus.setVisibility(View.GONE);
         liveReply.setVisibility(View.VISIBLE);
-        liveReply.update(content, animate, dp(4));
+        liveReply.update(content, animate, dp(2));
     }
 
     private final class TranscriptScroll extends ScrollView {
@@ -733,7 +736,9 @@ public final class MainActivity extends Activity {
         final boolean fromComposer;
         final ModelApi.Cancellation cancellation = new ModelApi.Cancellation();
         final StringBuilder content = new StringBuilder();
-        final Runnable refresh = this::renderLatest;
+        final Choreographer frames = Choreographer.getInstance();
+        final Choreographer.FrameCallback paint = time -> renderLatest();
+        final Runnable refresh = () -> frames.postFrameCallback(paint);
         boolean queued;
         boolean sealed;
         boolean presented;
@@ -753,7 +758,7 @@ public final class MainActivity extends Activity {
             content.append(delta);
             if (queued) return;
             queued = true;
-            ui.postAtTime(refresh, Math.max(nextRefresh, SystemClock.uptimeMillis() + MIN_REFRESH_MS));
+            ui.postAtTime(refresh, Math.max(nextRefresh, SystemClock.uptimeMillis()));
         }
 
         private void renderLatest() {
@@ -771,6 +776,7 @@ public final class MainActivity extends Activity {
         synchronized void seal() {
             sealed = true;
             ui.removeCallbacks(refresh);
+            frames.removeFrameCallback(paint);
         }
     }
 
@@ -895,13 +901,7 @@ public final class MainActivity extends Activity {
         space(rail, 14);
         ScrollView historyScroll = scroll();
         LinearLayout history = column();
-        sectionTitle(history, "最近会话");
-        if (store.recent.isEmpty()) {
-            TextView empty = text("暂无会话", 14, muted, false);
-            empty.setPadding(dp(8), dp(10), dp(8), dp(10));
-            history.addView(empty);
-        }
-        for (ChatStore.Chat chat : store.recent) addHistoryRow(history, chat);
+        renderHistory(history);
         historyScroll.addView(history);
         rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         rule(rail);
@@ -917,16 +917,43 @@ public final class MainActivity extends Activity {
         updateBackCallback();
     }
 
+    private void renderHistory(LinearLayout history) {
+        history.removeAllViews();
+        if (store.recent.isEmpty()) {
+            sectionTitle(history, "最近会话");
+            TextView empty = text("暂无会话", 14, muted, false);
+            empty.setPadding(dp(8), dp(10), dp(8), dp(10));
+            history.addView(empty);
+            return;
+        }
+        boolean hasPinned = store.recent.stream().anyMatch(chat -> chat.pinned);
+        if (hasPinned) {
+            sectionTitle(history, "置顶");
+            for (ChatStore.Chat chat : store.recent) if (chat.pinned) addHistoryRow(history, chat);
+        }
+        boolean hasRecent = store.recent.stream().anyMatch(chat -> !chat.pinned);
+        if (hasRecent) {
+            sectionTitle(history, "最近会话");
+            for (ChatStore.Chat chat : store.recent) if (!chat.pinned) addHistoryRow(history, chat);
+        }
+    }
+
     private void addHistoryRow(LinearLayout parent, ChatStore.Chat chat) {
         boolean current = chat == store.active;
+        LinearLayout entry = row();
+        entry.setGravity(Gravity.CENTER_VERTICAL);
+        entry.setBackground(shape(current ? tint : Color.TRANSPARENT, 8, 0));
         LinearLayout item = column();
         item.setPadding(dp(9), dp(9), dp(9), dp(9));
         item.setMinimumHeight(dp(64));
-        item.setBackground(ripple(current ? tint : 0, 8));
+        item.setGravity(Gravity.CENTER_VERTICAL);
+        item.setBackground(ripple(0, 8));
         item.setSelected(current);
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = text(chat.title, 15, ink, true);
+        title.setMaxLines(1);
+        title.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
         String date = DateFormat.getDateInstance(DateFormat.SHORT, Locale.SIMPLIFIED_CHINESE).format(chat.updatedAt);
         TextView time = text(date, 12, muted, false);
@@ -954,7 +981,60 @@ public final class MainActivity extends Activity {
             replyStatus = null;
             go(CHAT);
         });
-        parent.addView(item);
+        entry.addView(item, new LinearLayout.LayoutParams(0, WRAP, 1));
+        ImageButton more = iconButton("会话选项", R.drawable.ic_more, muted, 0, () -> historyOptions(parent, chat));
+        more.setContentDescription("会话选项 · " + chat.title);
+        entry.addView(more);
+        parent.addView(entry, new LinearLayout.LayoutParams(MATCH, WRAP));
+    }
+
+    private void historyOptions(LinearLayout history, ChatStore.Chat chat) {
+        String togglePin = chat.pinned ? "取消置顶" : "置顶会话";
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(preview(chat.title, 45))
+                .setItems(new String[]{togglePin, "重命名", "删除会话"}, (d, index) -> {
+                    if (index == 0) {
+                        try {
+                            store.pin(chat, !chat.pinned);
+                            renderHistory(history);
+                        } catch (IllegalStateException error) {
+                            notice("无法更新本机会话");
+                        }
+                    } else if (index == 1) renameChat(history, chat);
+                    else confirmDeleteChat(history, chat);
+                }).setNegativeButton("取消", null).create();
+        showDialog(dialog, true);
+    }
+
+    private void renameChat(LinearLayout history, ChatStore.Chat chat) {
+        LinearLayout form = dialogBody();
+        EditText title = field(form, "会话标题", chat.title, false);
+        title.setSelectAllOnFocus(true);
+        title.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        title.setSaveEnabled(false);
+        saveForm("重命名会话", form, true, () -> {
+            store.rename(chat, title.getText().toString());
+            renderHistory(history);
+        }, null);
+    }
+
+    private void confirmDeleteChat(LinearLayout history, ChatStore.Chat chat) {
+        if (sending && store.active == chat) { notice("请先停止生成"); return; }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("删除会话？")
+                .setMessage("「" + preview(chat.title, 45) + "」及其全部消息版本将从本机删除，无法撤销。")
+                .setNegativeButton("取消", null).setPositiveButton("删除", (d, index) -> {
+                    boolean current = store.active == chat;
+                    if (current && sending) { notice("请先停止生成"); return; }
+                    try { store.delete(chat); }
+                    catch (IllegalStateException error) { notice("无法删除本机会话"); return; }
+                    if (current) {
+                        draft = "";
+                        input.setText("");
+                        replyStatus = null;
+                        renderMessages();
+                    }
+                    renderHistory(history);
+                }).create();
+        showDialog(dialog, true);
     }
 
     private void closeDrawer() {
@@ -1029,7 +1109,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.5 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.6 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
@@ -1269,7 +1349,7 @@ public final class MainActivity extends Activity {
         EditText name = field(form, "服务商名称", old == null ? "" : old.label, false);
         EditText base = field(form, "HTTPS 根地址（含 API 路径）", old == null ? "" : old.base, false);
         if (old != null && !old.keys.isEmpty()) base.setEnabled(false);
-        saveForm(old == null ? "添加 OpenAI 兼容服务商" : "连接设置", form, false, () -> {
+        saveForm(old == null ? "添加服务商" : "连接设置", form, false, () -> {
             String label = name.getText().toString().strip();
             if (label.isEmpty() || label.length() > 64) throw new IllegalArgumentException("请输入 1–64 个字符的服务商名称。");
             String url = Providers.httpsBase(base.getText().toString());

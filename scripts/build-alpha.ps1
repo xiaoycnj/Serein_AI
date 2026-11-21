@@ -82,8 +82,8 @@ $compiled = Join-Path $work 'resources.zip'
 $resourcesApk = Join-Path $work 'resources.apk'
 Invoke-BuildTool $aapt2 @('compile', '--dir', (Join-Path $app 'res'), '-o', $compiled)
 Invoke-BuildTool $aapt2 @('link', '-o', $resourcesApk, '-I', $androidJar, '--manifest', $manifest,
-    '--java', $gen, '--min-sdk-version', '33', '--target-sdk-version', '36', '--version-code', '5',
-    '--version-name', '0.0.5-alpha', $compiled)
+    '--java', $gen, '--min-sdk-version', '33', '--target-sdk-version', '36', '--version-code', '6',
+    '--version-name', '0.0.6-alpha', $compiled)
 
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $app 'java'),$gen -Recurse -File -Filter '*.java' | ForEach-Object FullName)
 Invoke-BuildTool $javac (@('--release', '17', '-encoding', 'UTF-8', '-classpath', ((@($androidJar) + $dependencies) -join ';'), '-d', $classes) + $sources)
@@ -129,7 +129,7 @@ try {
 $aligned = Join-Path $work 'aligned.apk'
 Invoke-BuildTool $zipalign @('-f', '4', $unsigned, $aligned)
 
-$signed = Join-Path $work 'Serein-Alpha-0.0.5.apk'
+$signed = Join-Path $work 'Serein-Alpha-0.0.6.apk'
 if ($Release) {
     $signing = @('--ks', $env:SEREIN_RELEASE_KEYSTORE, '--ks-key-alias', 'serein-release',
         '--ks-pass', 'env:SEREIN_RELEASE_STORE_PASS', '--key-pass', 'env:SEREIN_RELEASE_STORE_PASS')
@@ -145,6 +145,6 @@ if ($Release) {
 }
 Invoke-BuildTool $apksigner (@('sign') + $signing + @('--v4-signing-enabled', 'false', '--out', $signed, $aligned))
 Invoke-BuildTool $apksigner @('verify', $signed)
-$artifact = Join-Path $out 'Serein-Alpha-0.0.5.apk'
+$artifact = Join-Path $out 'Serein-Alpha-0.0.6.apk'
 Copy-Item -LiteralPath $signed -Destination $artifact -Force
 Write-Output $artifact

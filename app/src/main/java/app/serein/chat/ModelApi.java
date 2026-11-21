@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 
 final class ModelApi {
     private static final int MAX_RESPONSE = 2 * 1024 * 1024;
+    private static final int ANTHROPIC_MAX_TOKENS = 4096;
 
     static final class Cancellation {
         private volatile boolean cancelled;
@@ -42,25 +43,38 @@ final class ModelApi {
     }
 
     static List<String> models(Providers.Provider provider) throws IOException, JSONException {
-        HttpsURLConnection connection = open(provider, "/models", "application/json");
-        JSONArray items;
-        try (InputStream input = response(connection)) {
-            items = readJson(input).getJSONArray("data");
-        } finally {
-            connection.disconnect();
-        }
         TreeSet<String> ids = new TreeSet<>();
-        for (int i = 0; i < items.length(); i++) {
-            String id = items.getJSONObject(i).optString("id").strip();
-            if (!id.isEmpty() && id.length() <= 256) ids.add(id);
+        boolean nativeMessages = provider.anthropicMessages();
+        String path = nativeMessages ? "/models?limit=1000" : "/models";
+        for (int page = 0; page < 10; page++) {
+            HttpsURLConnection connection = open(provider, path, "application/json");
+            connection.setReadTimeout(15_000);
+            JSONObject result;
+            try (InputStream input = response(connection)) {
+                result = readJson(input);
+            } finally {
+                connection.disconnect();
+            }
+            JSONArray items = result.getJSONArray("data");
+            for (int i = 0; i < items.length(); i++) {
+                String id = items.getJSONObject(i).optString("id").strip();
+                if (!id.isEmpty() && id.length() <= 256) ids.add(id);
+            }
+            if (!nativeMessages || !result.optBoolean("has_more")) return List.copyOf(ids);
+            String cursor = result.optString("last_id");
+            if (cursor.isBlank() || cursor.length() > 256) break;
+            String next = "/models?limit=1000&after_id=" + java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8);
+            if (next.equals(path)) break;
+            path = next;
         }
-        return List.copyOf(ids);
+        throw new IOException("服务商模型列表未完整返回。");
     }
 
     static void chat(Providers.Choice choice, List<ChatHistory.Turn> history, String prompt, int effort,
                      String profile, String summary, Cancellation cancellation, Consumer<String> delta)
             throws IOException, JSONException {
-        JSONObject body = payload(choice.model(), history, prompt, effort, profile, summary);
+        boolean anthropic = choice.provider().anthropicMessages();
+        JSONObject body = payload(choice.model(), history, prompt, effort, profile, summary, anthropic);
         request(choice.provider(), body, true, cancellation, delta);
     }
 
@@ -74,9 +88,11 @@ final class ModelApi {
                         .put("transcript_fragment", fragment).toString()));
         String outputLimit = "api.openai.com".equalsIgnoreCase(URI.create(choice.provider().base).getHost())
                 ? "max_completion_tokens" : "max_tokens";
-        JSONObject body = new JSONObject().put("model", choice.model().id()).put("messages", messages)
-                .put("stream", false).put(outputLimit, 2400);
-        if (choice.model().reasoning().equals("deepseek")) body.put("thinking", new JSONObject().put("type", "disabled"));
+        boolean anthropic = choice.provider().anthropicMessages();
+        JSONObject body = anthropic ? anthropicPayload(choice.model().id(), messages, false, 2400)
+                : new JSONObject().put("model", choice.model().id()).put("messages", messages)
+                        .put("stream", false).put(outputLimit, 2400);
+        if (!anthropic && choice.model().reasoning().equals("deepseek")) body.put("thinking", new JSONObject().put("type", "disabled"));
         StringBuilder summary = new StringBuilder();
         request(choice.provider(), body, false, cancellation, summary::append);
         return summary.toString();
@@ -85,7 +101,9 @@ final class ModelApi {
     private static void request(Providers.Provider provider, JSONObject payload, boolean stream,
                                 Cancellation cancellation, Consumer<String> delta) throws IOException, JSONException {
         byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
-        HttpsURLConnection connection = open(provider, "/chat/completions", stream ? "text/event-stream, application/json" : "application/json");
+        boolean anthropic = provider.anthropicMessages();
+        HttpsURLConnection connection = open(provider, anthropic ? "/messages" : "/chat/completions",
+                stream ? "text/event-stream, application/json" : "application/json");
         if (!stream) connection.setReadTimeout(15_000);
         try {
             cancellation.attach(connection);
@@ -99,12 +117,9 @@ final class ModelApi {
                 if (!stream || (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("json"))) {
                     JSONObject result = readJson(input);
                     cancellation.check();
-                    if (!result.isNull("error")) throw streamError();
-                    JSONObject item = result.getJSONArray("choices").getJSONObject(0);
-                    emitText(item.optJSONObject("message"), delta);
-                    finished(item);
+                    acceptJson(result, anthropic, delta);
                 } else {
-                    readStream(input, cancellation, delta);
+                    readStream(input, cancellation, delta, anthropic);
                 }
             }
         } finally {
@@ -115,6 +130,11 @@ final class ModelApi {
 
     static JSONObject payload(Providers.Model model, List<ChatHistory.Turn> history, String prompt, int effort,
                               String profile, String summary) throws JSONException {
+        return payload(model, history, prompt, effort, profile, summary, false);
+    }
+
+    static JSONObject payload(Providers.Model model, List<ChatHistory.Turn> history, String prompt, int effort,
+                              String profile, String summary, boolean anthropic) throws JSONException {
         JSONArray messages = new JSONArray();
         if (!profile.isBlank()) messages.put(message("system", profile));
         if (!summary.isBlank()) {
@@ -127,6 +147,7 @@ final class ModelApi {
             messages.put(message("assistant", turn.reply()));
         }
         messages.put(message("user", prompt));
+        if (anthropic) return anthropicPayload(model.id(), messages, true, ANTHROPIC_MAX_TOKENS);
         JSONObject body = new JSONObject().put("model", model.id()).put("messages", messages).put("stream", true);
         if (effort > 0 && !model.reasoning().equals("none")) {
             String level = switch (effort) { case 1 -> "low"; case 2 -> "medium"; default -> "high"; };
@@ -137,6 +158,18 @@ final class ModelApi {
             }
         }
         return body;
+    }
+
+    private static JSONObject anthropicPayload(String model, JSONArray messages, boolean stream, int limit) throws JSONException {
+        JSONArray turns = new JSONArray();
+        JSONObject payload = new JSONObject().put("model", model).put("messages", turns)
+                .put("stream", stream).put("max_tokens", limit);
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject message = messages.getJSONObject(i);
+            if (message.getString("role").equals("system")) payload.put("system", message.getString("content"));
+            else turns.put(message);
+        }
+        return payload;
     }
 
     private static JSONObject message(String role, String content) throws JSONException {
@@ -150,7 +183,10 @@ final class ModelApi {
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(120_000);
         connection.setRequestProperty("Accept", accept);
-        if (!provider.secret().isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + provider.secret());
+        if (provider.anthropicMessages()) {
+            connection.setRequestProperty("anthropic-version", "2023-06-01");
+            if (!provider.secret().isEmpty()) connection.setRequestProperty("x-api-key", provider.secret());
+        } else if (!provider.secret().isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + provider.secret());
         return connection;
     }
 
@@ -159,6 +195,7 @@ final class ModelApi {
         if (status < 200 || status >= 300) throw new IOException(switch (status) {
             case 401, 403 -> "服务商拒绝访问（HTTP " + status + "），请检查当前 Key。";
             case 429 -> "服务商限流或额度不足（HTTP 429）。";
+            case 529 -> "服务商暂时繁忙（HTTP 529），请稍后重试。";
             default -> "服务商返回 HTTP " + status + "。";
         });
         return connection.getInputStream();
@@ -171,7 +208,12 @@ final class ModelApi {
     }
 
     static void readStream(InputStream input, Cancellation cancellation, Consumer<String> delta)
-            throws IOException, JSONException {
+            throws IOException {
+        readStream(input, cancellation, delta, false);
+    }
+
+    static void readStream(InputStream input, Cancellation cancellation, Consumer<String> delta, boolean anthropic)
+            throws IOException {
         var reader = new BufferedReader(new InputStreamReader(new FilterInputStream(input) {
             private int remaining = MAX_RESPONSE;
 
@@ -193,7 +235,7 @@ final class ModelApi {
             firstLine = false;
             if (line.isEmpty()) {
                 // Only a blank line can dispatch an event, including on a truncated connection.
-                if (hasData && acceptEvent(eventType, data.toString(), delta)) return;
+                if (hasData && acceptEvent(eventType, data.toString(), delta, anthropic)) return;
                 data.setLength(0);
                 eventType = "";
                 hasData = false;
@@ -215,14 +257,20 @@ final class ModelApi {
         throw new IOException("服务商连接提前结束。");
     }
 
-    private static boolean acceptEvent(String eventType, String data, Consumer<String> delta)
+    private static boolean acceptEvent(String eventType, String data, Consumer<String> delta, boolean anthropic)
             throws IOException {
-        if (eventType.equals("error")) throw streamError();
-        if (eventType.equals("ping") || data.isBlank()) return false;
-        if (data.strip().equals("[DONE]")) return true;
+        if (eventType.equals("ping")) return false;
+        if (data.isBlank()) {
+            if (eventType.equals("error")) throw streamError(null);
+            return false;
+        }
+        if (!anthropic && data.strip().equals("[DONE]") && !eventType.equals("error")) return true;
         try {
             JSONObject chunk = new JSONObject(data);
-            if (!chunk.isNull("error")) throw streamError();
+            if (eventType.equals("error") || !chunk.isNull("error") || "error".equals(chunk.optString("type"))) {
+                throw streamError(chunk);
+            }
+            if (anthropic) return acceptAnthropic(eventType, chunk, delta);
             JSONArray choices = chunk.optJSONArray("choices");
             if (choices == null) return false;
             for (int index = 0; index < choices.length(); index++) {
@@ -233,15 +281,57 @@ final class ModelApi {
             }
             return false;
         } catch (JSONException invalid) {
+            if (eventType.equals("error")) throw streamError(null);
             throw new IOException("服务商返回了无法读取的流式回复。", invalid);
+        }
+    }
+
+    private static boolean acceptAnthropic(String eventType, JSONObject chunk, Consumer<String> delta) throws IOException {
+        String type = chunk.optString("type", eventType);
+        switch (type) {
+            case "content_block_start" -> emitBlockText(chunk.optJSONObject("content_block"), "text", delta);
+            case "content_block_delta" -> emitBlockText(chunk.optJSONObject("delta"), "text_delta", delta);
+            case "message_delta" -> {
+                JSONObject update = chunk.optJSONObject("delta");
+                if (update != null) finishedAnthropic(update);
+            }
+            case "message_stop" -> { return true; }
+        }
+        return false;
+    }
+
+    static void acceptJson(JSONObject result, boolean anthropic, Consumer<String> delta) throws IOException, JSONException {
+        if (!result.isNull("error") || "error".equals(result.optString("type"))) throw streamError(result);
+        if (anthropic) {
+            JSONArray content = result.getJSONArray("content");
+            for (int i = 0; i < content.length(); i++) emitBlockText(content.getJSONObject(i), "text", delta);
+            finishedAnthropic(result);
+        } else {
+            JSONObject item = result.getJSONArray("choices").getJSONObject(0);
+            emitText(item.optJSONObject("message"), delta);
+            finished(item);
+        }
+    }
+
+    private static void emitBlockText(JSONObject block, String type, Consumer<String> delta) {
+        if (block != null && type.equals(block.optString("type")) && block.opt("text") instanceof String text
+                && !text.isEmpty()) delta.accept(text);
+    }
+
+    private static void finishedAnthropic(JSONObject message) throws IOException {
+        if (!(message.opt("stop_reason") instanceof String reason)) return;
+        switch (reason) {
+            case "max_tokens", "model_context_window_exceeded" -> throw new IOException("模型达到输出或上下文上限，回复未完成。");
+            case "refusal" -> throw new IOException("服务商停止了这条回复。");
+            case "tool_use", "pause_turn" -> throw new IOException("模型需要继续执行工具调用，无法完成这条回复。");
         }
     }
 
     private static void emitText(JSONObject message, Consumer<String> delta) {
         // DeepSeek reasoning_content is separate from the answer and is not stored or displayed.
-        if (message != null && message.opt("content") instanceof String text && !text.isEmpty()) {
-            delta.accept(text);
-        }
+        if (message == null) return;
+        if (message.opt("content") instanceof String text && !text.isEmpty()) delta.accept(text);
+        else if (message.opt("refusal") instanceof String refusal && !refusal.isEmpty()) delta.accept(refusal);
     }
 
     private static boolean finished(JSONObject choice) throws IOException {
@@ -249,13 +339,21 @@ final class ModelApi {
         switch (reason) {
             case "length" -> throw new IOException("模型达到输出上限，回复未完成。");
             case "content_filter" -> throw new IOException("服务商停止了这条回复。");
+            case "insufficient_system_resource" -> throw new IOException("服务商资源不足，回复未完成。");
+            case "aborted" -> throw new IOException("服务商中断了回复。");
             case "tool_calls", "function_call" -> throw new IOException("模型返回了工具调用，无法继续生成回复。");
         }
         // Some compatible endpoints close after finish_reason without sending [DONE].
         return true;
     }
 
-    private static IOException streamError() {
-        return new IOException("服务商中断了回复。");
+    private static IOException streamError(JSONObject chunk) {
+        JSONObject error = chunk == null ? null : chunk.optJSONObject("error");
+        String type = error == null ? "" : error.optString("type");
+        return new IOException(switch (type) {
+            case "overloaded_error" -> "服务商暂时繁忙，请稍后重试。";
+            case "rate_limit_error" -> "服务商限流，请稍后重试。";
+            default -> "服务商中断了回复。";
+        });
     }
 }

@@ -26,18 +26,27 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ## 项目路线图
 
-- MVP 先交付一条可靠、易读、可测试的核心对话流程。
-- 后续候选只有在出现明确聊天需求证据、符合产品边界并完成取舍评审后才进入排期。
+路线图依据 Android 聊天产品的官方帮助资料及当前 Alpha 的代码与测试状态滚动修订。竞品只用于核对用户已经熟悉的聊天交互，不作为功能清单：Gemini Android 支持会话搜索、置顶、重命名和删除；ChatGPT Android 支持会话历史及按消息提供复制、反馈、朗读、分享和重试等操作。Serein 先实现与本地单用户聊天直接相关的会话整理和消息编辑/重试；账号同步、协作、文件空间与自主工具执行不在产品边界内。来源：[Gemini 聊天管理](https://support.google.com/gemini/answer/13666746?co=GENIE.Platform%3DAndroid&hl=en)、[ChatGPT Android FAQ](https://help.openai.com/en/articles/8142208-chatgpt-ios-and-android-app-faq)。
 
-## Alpha 0.0.5
+| 阶段 | 目标 | 验收条件 | 取舍 |
+| --- | --- | --- | --- |
+| Alpha 0.0.6（本次） | 完成核心对话与本地会话管理 | 支持流式回答、停止、Markdown、消息编辑/重试分支；会话置顶/取消置顶、重命名、删除在重启后保持正确；关键状态有 JVM 回归测试；发行 APK 可校验签名 | 置顶、改名和删除解决历史列表整理；不加入云同步 |
+| Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
+| Beta 候选 | 改善长历史查找与数据可控性 | 先收集本机聊天数量、找回旧会话的实际需求；如搜索进入排期，需覆盖标题与消息内容且只在本机查询；数据导出需能验证格式并明确敏感信息处理 | 搜索、导出和更细的保留控制暂不承诺版本 |
+| 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
+
+每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
+
+## Alpha 0.0.6
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 每轮消息下方可编辑提问、重新生成回复。两种操作都会创建版本，原回答与后续对话可以通过版本按钮切回。
+- 在侧栏的会话选项里置顶、重命名或删除会话。置顶状态加密保存在本机，新消息不会让置顶会话移出顶部；重命名保留消息和版本。确认删除后，本机记录及其全部版本会被移除。
 - 在「账户」保存显示名称和简介。资料在本机加密保存，开启「随聊天发送账户资料」后才会放入在线请求的系统提示词。
 - 「设置 → 自定义插件」提供两个默认关闭的聊天扩展。自动压缩保留最近四轮和当前提问，将较早的历史分段发给本轮服务商生成摘要，可能产生额外费用。原文仍保存在本机。自动路由在当前服务商已配置的模型中，按提问类型、上下文容量和目录价格选择。实际模型显示在回复旁，手动选模型可退出自动路由。
 - 消息支持原生 Markdown 富文本，包括标题、粗体、斜体、引用、列表、代码、链接和表格。长按可选择文本。图片仅显示替代文字，HTML 以文本显示。
-- OpenAI 兼容服务商通过 SSE 逐段输出。Markdown 合并刷新，向上翻阅时保留当前滚动位置，回到末尾后恢复跟随。停止生成或连接中断时，已收到的正文会存入聊天记录。回复开头前三个可见字符会短暂模糊渐入，可在「外观 → 减少动效」关闭，也遵循系统动画设置。
-- 在「会话 → 设置 → 服务商连接」添加 OpenAI 兼容服务商，填写带 API 路径的 HTTPS 根地址，例如 `https://api.openai.com/v1`。为每一把 Key 命名，在服务商详情指定当前 Key，再拉取模型列表或手动填写模型 ID。从聊天顶部切换模型。
+- SSE 按协议读取正文和结束状态。Markdown 刷新与屏幕帧对齐，向上翻阅时保留当前滚动位置，回到末尾后恢复跟随。停止生成或连接中断时，已收到的正文会存入聊天记录。回复开头前三个可见字符有短暂的模糊渐入，可在「外观 → 减少动效」关闭，也遵循系统动画设置。
+- 在「会话 → 设置 → 服务商连接」填写带 API 路径的 HTTPS 根地址。OpenAI、DeepSeek 和兼容网关沿用 Chat Completions。填写 `https://api.anthropic.com/v1` 会使用官方 Anthropic Messages API，思考强度由模型决定。配置 Key 后可拉取模型列表或手动填写模型 ID，从聊天顶部切换模型。
 - 模型选择器沿用聊天主题，显示品牌图标、当前模型和服务商。搜索可按名称、模型 ID、发布方或服务商筛选。
 - APK 内置 601 个模型 ID 和显式别名，按完整 ID 区分大小写匹配。手动添加和首次拉取时可预填模型名称、发布方与图标。部分已知官方端点会预填思考参数，其他端点沿用服务商默认值。模型设置可手动修改这些字段，重复拉取会保留已有配置。
 - 在模型设置中选择适用的思考参数。键盘展开时，输入框上方显示档位滑块。选择「默认」时由服务商决定。请按所用模型的文档选择 `reasoning_effort` 或 DeepSeek 档位。
@@ -47,7 +56,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.5.apk
+adb install -r .\outputs\Serein-Alpha-0.0.6.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
@@ -56,7 +65,9 @@ adb install -r .\outputs\Serein-Alpha-0.0.5.apk
 
 在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。
 
-流式事件处理、Markdown 刷新、滚动跟随与消息版本参考了 [DeepSeek Chat Demo](https://github.com/deepseek-ai/chat-demo/tree/8ad7b56e196b87d8a3215dc09476d6d146ad3f0e)。分段摘要、上下文预算和本地规则路由参考了 [AstraAgent](https://github.com/xiaoycnj/AstraAgent/tree/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f)。`./scripts/build-alpha.ps1 -RunChatTests` 会在打包前运行本机 JVM 回归测试，无需 Android 设备或服务商 Key。
+流式处理对照了 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion) 和 [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)。帧刷新和渐入参考了 [AstraAgent 的会话渲染](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/js/conversation.js) 与 [动效样式](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/css/ui/chat-motion.css)。消息版本和滚动跟随参考了 [DeepSeek Chat Demo](https://github.com/deepseek-ai/chat-demo/tree/8ad7b56e196b87d8a3215dc09476d6d146ad3f0e)，分段摘要和本地模型路由参考了 [AstraAgent](https://github.com/xiaoycnj/AstraAgent/tree/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f)。
+
+`./scripts/build-alpha.ps1 -RunChatTests` 会在打包前运行本机 JVM 回归测试，无需 Android 设备或服务商 Key。
 
 ## 开源许可
 

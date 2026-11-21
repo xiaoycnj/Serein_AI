@@ -8,13 +8,17 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 final class ChatStore {
+    static final int MAX_TITLE_LENGTH = 80;
+
     static final class Chat {
         final String id;
-        final String title;
+        String title;
         final ChatHistory history;
         long updatedAt;
+        boolean pinned;
         ChatContext.Checkpoint checkpoint;
 
         Chat(String id, String title, long updatedAt, ChatHistory history) {
@@ -25,22 +29,37 @@ final class ChatStore {
         }
     }
 
-    private final Vault vault;
+    private final Consumer<String> persist;
     final List<Chat> recent = new ArrayList<>();
     Chat active;
 
     ChatStore(SharedPreferences prefs, Vault vault) {
-        this.vault = vault;
-        String encrypted = vault.read("chat", null);
+        this(load(prefs, vault), json -> vault.write("chat", json, "history", "active_chat"));
+        if (prefs.contains("history") || prefs.contains("active_chat")) save();
+    }
+
+    private static String load(SharedPreferences prefs, Vault vault) {
+        String saved = vault.read("chat", null);
+        if (saved != null) return saved;
         try {
-            JSONObject data = encrypted == null ? new JSONObject()
+            return new JSONObject()
                     .put("history", new JSONArray(prefs.getString("history", "[]")))
-                    .put("active", prefs.getString("active_chat", "")) : new JSONObject(encrypted);
+                    .put("active", prefs.getString("active_chat", "")).toString();
+        } catch (JSONException error) {
+            throw new IllegalStateException("无法读取本机历史", error);
+        }
+    }
+
+    ChatStore(String savedHistory, Consumer<String> persist) {
+        this.persist = persist;
+        try {
+            JSONObject data = new JSONObject(savedHistory);
             JSONArray saved = data.getJSONArray("history");
             for (int i = 0; i < saved.length(); i++) {
                 JSONObject entry = saved.getJSONObject(i);
                 ChatHistory history = ChatHistory.read(entry.getJSONArray("turns"), entry.optInt("leaf", -1));
                 Chat chat = new Chat(entry.getString("id"), entry.getString("title"), entry.getLong("updated"), history);
+                chat.pinned = entry.optBoolean("pinned", false);
                 JSONObject checkpoint = entry.optJSONObject("checkpoint");
                 if (checkpoint != null) chat.checkpoint = new ChatContext.Checkpoint(checkpoint.getString("scope"),
                         checkpoint.getInt("through"), checkpoint.getString("text"));
@@ -48,7 +67,6 @@ final class ChatStore {
             }
             String last = data.optString("active");
             for (Chat chat : recent) if (chat.id.equals(last)) active = chat;
-            if (encrypted == null && (prefs.contains("history") || prefs.contains("active_chat"))) save();
         } catch (JSONException | IllegalArgumentException error) {
             throw new IllegalStateException("无法读取本机历史", error);
         }
@@ -59,6 +77,49 @@ final class ChatStore {
         active = chat;
         try { save(); }
         catch (RuntimeException error) { active = previous; throw error; }
+    }
+
+    void rename(Chat chat, String name) {
+        if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
+        String title = name.replaceAll("\\R", " ").strip();
+        if (title.isBlank() || title.codePointCount(0, title.length()) > MAX_TITLE_LENGTH) {
+            throw new IllegalArgumentException("请输入 1–" + MAX_TITLE_LENGTH + " 个字符的标题。");
+        }
+        String previous = chat.title;
+        if (title.equals(previous)) return;
+        chat.title = title;
+        try { save(); }
+        catch (RuntimeException error) { chat.title = previous; throw error; }
+    }
+
+    void pin(Chat chat, boolean pinned) {
+        if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
+        if (chat.pinned == pinned) return;
+        int position = recent.indexOf(chat);
+        recent.remove(position);
+        chat.pinned = pinned;
+        insertRecent(chat);
+        try { save(); }
+        catch (RuntimeException error) {
+            recent.remove(chat);
+            chat.pinned = !pinned;
+            recent.add(position, chat);
+            throw error;
+        }
+    }
+
+    void delete(Chat chat) {
+        int position = recent.indexOf(chat);
+        if (position < 0) throw new IllegalStateException("会话不存在");
+        Chat previous = active;
+        recent.remove(position);
+        if (active == chat) active = null;
+        try { save(); }
+        catch (RuntimeException error) {
+            recent.add(position, chat);
+            active = previous;
+            throw error;
+        }
     }
 
     void selectVersion(int id) {
@@ -84,7 +145,7 @@ final class ChatStore {
         if (checkpoint != null) active.checkpoint = checkpoint;
         active.updatedAt = System.currentTimeMillis();
         recent.remove(active);
-        recent.add(0, active);
+        insertRecent(active);
         try { save(); }
         catch (RuntimeException error) {
             recent.remove(active);
@@ -97,18 +158,30 @@ final class ChatStore {
         }
     }
 
+    private void insertRecent(Chat chat) {
+        if (chat.pinned) {
+            recent.add(0, chat);
+            return;
+        }
+        int position = 0;
+        while (position < recent.size() && recent.get(position).pinned) position++;
+        while (position < recent.size() && recent.get(position).updatedAt > chat.updatedAt) position++;
+        recent.add(position, chat);
+    }
+
     private void save() {
         JSONArray saved = new JSONArray();
         try {
             for (Chat chat : recent) {
                 JSONObject row = new JSONObject().put("id", chat.id).put("title", chat.title)
-                        .put("updated", chat.updatedAt).put("turns", chat.history.write()).put("leaf", chat.history.leaf());
+                        .put("updated", chat.updatedAt).put("pinned", chat.pinned)
+                        .put("turns", chat.history.write()).put("leaf", chat.history.leaf());
                 if (chat.checkpoint != null) row.put("checkpoint", new JSONObject().put("scope", chat.checkpoint.scope())
                         .put("through", chat.checkpoint.through()).put("text", chat.checkpoint.text()));
                 saved.put(row);
             }
             String json = new JSONObject().put("history", saved).put("active", active == null ? "" : active.id).toString();
-            vault.write("chat", json, "history", "active_chat");
+            persist.accept(json);
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);
         }

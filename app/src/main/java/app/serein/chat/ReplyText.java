@@ -14,6 +14,7 @@ import android.widget.TextView;
 final class ReplyText extends TextView {
     private final ValueAnimator[] animators = new ValueAnimator[3];
     private final float[] progress = {1, 1, 1};
+    private final BlurMaskFilter[] blur = new BlurMaskFilter[10];
     private int started;
 
     ReplyText(Context context) { super(context); }
@@ -23,13 +24,14 @@ final class ReplyText extends TextView {
     void update(SpannableStringBuilder content, boolean animateOpening, float radius) {
         if ((animateOpening && started < 3) || animating()) {
             int[][] ranges = opening(content.toString());
+            int previous = started;
             for (int i = 0; i < ranges.length; i++) {
                 if (animateOpening && i >= started) {
-                    startReveal(i);
+                    startReveal(i, i - previous, radius);
                     started = i + 1;
                 }
                 if (animators[i] != null) {
-                    content.setSpan(new RevealSpan(i, radius), ranges[i][0], ranges[i][1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    content.setSpan(new RevealSpan(i), ranges[i][0], ranges[i][1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 }
             }
         }
@@ -41,14 +43,18 @@ final class ReplyText extends TextView {
         return false;
     }
 
-    private void startReveal(int index) {
+    private void startReveal(int index, int stagger, float radius) {
         // Software text drawing supports mask filters on individual glyphs.
+        if (blur[1] == null) {
+            for (int i = 1; i < blur.length; i++) blur[i] = new BlurMaskFilter(radius * i / 9, BlurMaskFilter.Blur.NORMAL);
+        }
         if (!animating()) setLayerType(LAYER_TYPE_SOFTWARE, null);
         progress[index] = 0;
         ValueAnimator animator = ValueAnimator.ofFloat(0, 1);
         animators[index] = animator;
         animator.setInterpolator(new PathInterpolator(.2f, .7f, .25f, 1));
-        animator.setDuration(240);
+        animator.setStartDelay(stagger * 18L);
+        animator.setDuration(165);
         animator.addUpdateListener(frame -> {
             progress[index] = (float) frame.getAnimatedValue();
             if (progress[index] == 1f) {
@@ -95,16 +101,12 @@ final class ReplyText extends TextView {
 
     private final class RevealSpan extends CharacterStyle {
         private final int index;
-        private final BlurMaskFilter[] blur = new BlurMaskFilter[10];
 
-        RevealSpan(int index, float radius) {
-            this.index = index;
-            for (int i = 1; i < blur.length; i++) blur[i] = new BlurMaskFilter(radius * i / 9, BlurMaskFilter.Blur.NORMAL);
-        }
+        RevealSpan(int index) { this.index = index; }
 
         @Override public void updateDrawState(TextPaint paint) {
             float fraction = progress[index];
-            paint.setAlpha(Math.round(paint.getAlpha() * fraction));
+            paint.setAlpha(Math.round(paint.getAlpha() * (.48f + .52f * fraction)));
             paint.setMaskFilter(blur[Math.round((1 - fraction) * 9)]);
         }
     }

@@ -33,6 +33,10 @@ final class Providers {
         }
 
         String secret() { return activeKey < 0 ? "" : keys.get(activeKey).secret(); }
+        boolean anthropicMessages() {
+            URI uri = URI.create(base);
+            return "api.anthropic.com".equalsIgnoreCase(uri.getHost()) && "/v1".equals(uri.getRawPath());
+        }
         Provider credentials(List<Key> updated, int selected) { return new Provider(id, label, base, updated, models, selected); }
         Provider catalog(List<Model> updated) { return new Provider(id, label, base, keys, updated, activeKey); }
     }

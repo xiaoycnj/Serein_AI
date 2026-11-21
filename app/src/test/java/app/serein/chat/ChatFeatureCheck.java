@@ -10,9 +10,78 @@ import java.util.List;
 final class ChatFeatureCheck {
     public static void main(String[] args) throws Exception {
         versions();
+        conversationManagement();
         profileAndPayload();
         routing();
         checkpoints();
+    }
+
+    private static void conversationManagement() throws Exception {
+        var disk = new java.util.concurrent.atomic.AtomicReference<>("{\"history\":[],\"active\":\"\"}");
+        ChatStore store = new ChatStore(disk.get(), disk::set);
+        var checkpoint = new ChatContext.Checkpoint("provider/model", 0, "old summary");
+        store.append(-1, "first", "answer", "model", checkpoint);
+        store.append(-1, "first", "another answer", "model", null);
+        ChatStore.Chat first = store.active;
+        store.open(null);
+        store.append(-1, "second", "another chat", "model", null);
+        ChatStore.Chat second = store.active;
+        long originalTime = first.updatedAt;
+        store.rename(first, "  Renamed\nchat  ");
+        equal(first.updatedAt, originalTime);
+        equal(store.recent, List.of(second, first));
+
+        ChatStore reloaded = new ChatStore(disk.get(), disk::set);
+        ChatStore.Chat renamed = reloaded.recent.get(1);
+        equal(renamed.id, first.id);
+        equal(renamed.title, "Renamed chat");
+        equal(renamed.history.variants(1), List.of(0, 1));
+        equal(renamed.checkpoint, checkpoint);
+        equal(reloaded.active.id, second.id);
+        reloaded.pin(renamed, true);
+        reloaded.append(reloaded.active.history.leaf(), "second follow-up", "recent answer", "model", null);
+        equal(reloaded.recent.get(0), renamed);
+        equal(reloaded.recent.get(1), reloaded.active);
+        ChatStore pinnedReload = new ChatStore(disk.get(), disk::set);
+        equal(pinnedReload.recent.get(0).title, "Renamed chat");
+        equal(pinnedReload.recent.get(0).pinned, true);
+        pinnedReload.pin(pinnedReload.recent.get(0), false);
+        equal(pinnedReload.recent.get(0).title, "second");
+        equal(pinnedReload.recent.get(0).pinned, false);
+        try {
+            reloaded.rename(renamed, " \n ");
+            throw new AssertionError("Blank title accepted");
+        } catch (IllegalArgumentException expected) {
+            equal(renamed.title, "Renamed chat");
+        }
+
+        ChatStore failing = new ChatStore(disk.get(), saved -> { throw new IllegalStateException("test write failure"); });
+        ChatStore.Chat current = failing.active;
+        List<ChatStore.Chat> before = List.copyOf(failing.recent);
+        for (Runnable mutation : List.<Runnable>of(() -> failing.rename(current, "Unsaved"),
+                () -> failing.pin(current, true), () -> failing.delete(current))) {
+            try {
+                mutation.run();
+                throw new AssertionError("Write failure was swallowed");
+            } catch (IllegalStateException expected) {
+                equal(failing.active, current);
+                equal(current.title, "second");
+                equal(current.pinned, false);
+                equal(failing.recent, before);
+            }
+        }
+
+        reloaded.delete(renamed);
+        equal(reloaded.active.id, second.id);
+        equal(reloaded.recent.size(), 1);
+        JSONArray remaining = new JSONObject(disk.get()).getJSONArray("history");
+        equal(remaining.length(), 1);
+        equal(remaining.getJSONObject(0).getString("id"), second.id);
+        reloaded.delete(reloaded.active);
+        ChatStore empty = new ChatStore(disk.get(), disk::set);
+        equal(empty.active, null);
+        equal(empty.recent.size(), 0);
+        System.out.println("PASS: conversation rename, delete, reload, and rollback after failed saves");
     }
 
     private static void versions() throws Exception {
@@ -61,6 +130,23 @@ final class ChatFeatureCheck {
         equal(messages.getJSONObject(5).getString("content"), "question");
         equal(request.getString("reasoning_effort"), "medium");
         System.out.println("PASS: profile remains private by default and authorized requests preserve message order");
+
+        var nativeProvider = new Providers.Provider("claude", "Anthropic", "https://api.anthropic.com/v1", List.of(), List.of(model), -1);
+        var compatible = new Providers.Provider("proxy", "Gateway", "https://example.com/v1", List.of(), List.of(model), -1);
+        equal(nativeProvider.anthropicMessages(), true);
+        equal(compatible.anthropicMessages(), false);
+        JSONObject anthropic = ModelApi.payload(model, List.of(new ChatHistory.Turn("recent", "answer", "model")),
+                "question", 3, profile.systemPrompt(), "older context", true);
+        equal(anthropic.getString("system"), profile.systemPrompt());
+        equal(anthropic.getInt("max_tokens"), 4096);
+        equal(anthropic.getBoolean("stream"), true);
+        equal(anthropic.has("reasoning_effort"), false);
+        JSONArray turns = anthropic.getJSONArray("messages");
+        equal(turns.length(), 5);
+        equal(turns.getJSONObject(0).getString("role"), "user");
+        equal(turns.getJSONObject(4).getString("content"), "question");
+        equal(ModelApi.payload(model, List.of(), "private", 0, "", "", true).has("system"), false);
+        System.out.println("PASS: official Anthropic endpoint and native Messages payload");
     }
 
     private static void routing() {

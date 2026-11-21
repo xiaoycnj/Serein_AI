@@ -1,5 +1,7 @@
 package app.serein.chat;
 
+import org.json.JSONObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -35,7 +37,9 @@ final class ModelApiStreamCheck {
         for (String suffix : List.of("", DONE.stripTrailing(), "event: error\ndata: problem\n\n",
                 "data: {\"error\":{\"message\":\"upstream error\"}}\n\n", "data: {\n\n",
                 PREFIX + "\"finish_reason\":\"length\"}]}\n\n",
-                PREFIX + "\"finish_reason\":\"tool_calls\"}]}\n\n")) {
+                PREFIX + "\"finish_reason\":\"tool_calls\"}]}\n\n",
+                PREFIX + "\"finish_reason\":\"insufficient_system_resource\"}]}\n\n",
+                PREFIX + "\"finish_reason\":\"aborted\"}]}\n\n")) {
             chunks.clear();
             ioFailure(() -> ModelApi.readStream(input(FIRST + suffix, 9), new ModelApi.Cancellation(), chunks::add));
             expect(chunks, List.of("\u4f60"));
@@ -57,6 +61,50 @@ final class ModelApiStreamCheck {
         ioFailure(() -> ModelApi.readStream(input(oversized, 8192), new ModelApi.Cancellation(), chunks::add));
         expect(chunks, List.of("\u4f60"));
         System.out.println("PASS: response byte budget limits oversized wire payloads");
+
+        chunks.clear();
+        ModelApi.readStream(input(PREFIX + "\"delta\":{\"refusal\":\"declined\"}}]}\n\n" + DONE, 3),
+                new ModelApi.Cancellation(), chunks::add);
+        expect(chunks, List.of("declined"));
+        System.out.println("PASS: display user-facing Chat Completions refusal text");
+
+        anthropicStreams();
+    }
+
+    private static void anthropicStreams() throws Exception {
+        List<String> chunks = new ArrayList<>();
+        String blocks = named("message_start", "\"message\":{}")
+                + ": heartbeat\n\n" + named("ping", "\"usage\":{}")
+                + named("content_block_start", "\"content_block\":{\"type\":\"text\",\"text\":\"Hello\"}")
+                + named("content_block_delta", "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"private\"}")
+                + named("future_event", "\"text\":\"ignored\"")
+                + named("content_block_delta", "\"delta\":{\"type\":\"text_delta\",\"text\":\" \uD83D\uDC4B\"}");
+        String beforeStop = blocks + named("message_delta", "\"delta\":{\"stop_reason\":\"end_turn\"}");
+        String stop = named("message_stop", "\"usage\":{}");
+        ModelApi.readStream(input(beforeStop + stop, 1), new ModelApi.Cancellation(), chunks::add, true);
+        expect(chunks, List.of("Hello", " \uD83D\uDC4B"));
+        for (String truncated : List.of(beforeStop, beforeStop + stop.stripTrailing(), beforeStop + DONE,
+                blocks + named("message_delta", "\"delta\":{\"stop_reason\":\"max_tokens\"}") + stop,
+                blocks + named("error", "\"error\":{\"type\":\"overloaded_error\",\"message\":\"private details\"}"))) {
+            chunks.clear();
+            IOException failure = ioFailure(() -> ModelApi.readStream(input(truncated, 5),
+                    new ModelApi.Cancellation(), chunks::add, true));
+            expect(chunks, List.of("Hello", " \uD83D\uDC4B"));
+            if (truncated.contains("overloaded_error") && !failure.getMessage().equals("服务商暂时繁忙，请稍后重试。")) {
+                throw new AssertionError(failure);
+            }
+        }
+        chunks.clear();
+        ModelApi.acceptJson(new JSONObject("""
+                {"type":"message","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hidden"},
+                 {"type":"text","text":"one"},{"type":"text","text":"two"}]}
+                """), true, chunks::add);
+        expect(chunks, List.of("one", "two"));
+        System.out.println("PASS: Anthropic text blocks, terminal event, errors, and JSON reply");
+    }
+
+    private static String named(String type, String fields) {
+        return "event: " + type + "\ndata: {\"type\":\"" + type + "\"," + fields + "}\n\n";
     }
 
     private static ByteArrayInputStream input(String text, int chunkSize) {
