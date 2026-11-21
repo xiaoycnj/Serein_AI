@@ -6,7 +6,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -130,6 +132,10 @@ final class ChatStore {
     }
 
     void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint) {
+        append(parent, prompt, reply, model, checkpoint, null);
+    }
+
+    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card) {
         Chat previous = active;
         if (active == null) {
             String firstLine = prompt.split("\\R", 2)[0];
@@ -141,7 +147,7 @@ final class ChatStore {
         int oldPosition = recent.indexOf(active);
         int oldLeaf = active.history.leaf();
         ChatContext.Checkpoint oldCheckpoint = active.checkpoint;
-        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model));
+        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of()));
         if (checkpoint != null) active.checkpoint = checkpoint;
         active.updatedAt = System.currentTimeMillis();
         recent.remove(active);
@@ -156,6 +162,23 @@ final class ChatStore {
             active = previous;
             throw error;
         }
+    }
+
+    void updateCard(Chat chat, int id, String key, Object value) {
+        if (active != chat || !chat.history.path(chat.history.leaf()).contains(id)) {
+            throw new IllegalStateException("Card is not in the active version");
+        }
+        ChatHistory.Turn previous = chat.history.turn(id);
+        if (previous.card() == null || !previous.card().validState(key, value)) {
+            throw new IllegalStateException("Invalid card state");
+        }
+        if (value.equals(previous.cardState().get(key))) return;
+        Map<String, Object> state = new HashMap<>(previous.cardState());
+        state.put(key, value);
+        chat.history.replace(id, new ChatHistory.Turn(previous.prompt(), previous.reply(), previous.model(),
+                previous.card(), Map.copyOf(state)));
+        try { save(); }
+        catch (RuntimeException error) { chat.history.replace(id, previous); throw error; }
     }
 
     private void insertRecent(Chat chat) {

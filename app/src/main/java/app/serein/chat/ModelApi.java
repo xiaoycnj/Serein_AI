@@ -70,12 +70,16 @@ final class ModelApi {
         throw new IOException("服务商模型列表未完整返回。");
     }
 
-    static void chat(Providers.Choice choice, List<ChatHistory.Turn> history, String prompt, int effort,
-                     String profile, String summary, Cancellation cancellation, Consumer<String> delta)
+    static ChatCard chat(Providers.Choice choice, List<ChatHistory.Turn> history, String prompt, int effort,
+                     String profile, String summary, boolean iui, Cancellation cancellation, Consumer<String> delta)
             throws IOException, JSONException {
         boolean anthropic = choice.provider().anthropicMessages();
         JSONObject body = payload(choice.model(), history, prompt, effort, profile, summary, anthropic);
-        request(choice.provider(), body, true, cancellation, delta);
+        IuiCall call = iui ? new IuiCall() : null;
+        if (iui) body.put("tools", ChatCard.tools(anthropic));
+        request(choice.provider(), body, true, cancellation, delta, call);
+        cancellation.check();
+        return call == null ? null : call.result();
     }
 
     static String summarize(Providers.Choice choice, String previous, String fragment, Cancellation cancellation)
@@ -94,12 +98,12 @@ final class ModelApi {
                         .put("stream", false).put(outputLimit, 2400);
         if (!anthropic && choice.model().reasoning().equals("deepseek")) body.put("thinking", new JSONObject().put("type", "disabled"));
         StringBuilder summary = new StringBuilder();
-        request(choice.provider(), body, false, cancellation, summary::append);
+        request(choice.provider(), body, false, cancellation, summary::append, null);
         return summary.toString();
     }
 
     private static void request(Providers.Provider provider, JSONObject payload, boolean stream,
-                                Cancellation cancellation, Consumer<String> delta) throws IOException, JSONException {
+                                Cancellation cancellation, Consumer<String> delta, IuiCall call) throws IOException, JSONException {
         byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
         boolean anthropic = provider.anthropicMessages();
         HttpsURLConnection connection = open(provider, anthropic ? "/messages" : "/chat/completions",
@@ -117,9 +121,9 @@ final class ModelApi {
                 if (!stream || (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("json"))) {
                     JSONObject result = readJson(input);
                     cancellation.check();
-                    acceptJson(result, anthropic, delta);
+                    acceptJson(result, anthropic, delta, call);
                 } else {
-                    readStream(input, cancellation, delta, anthropic);
+                    readStream(input, cancellation, delta, anthropic, call);
                 }
             }
         } finally {
@@ -144,7 +148,7 @@ final class ModelApi {
         }
         for (ChatHistory.Turn turn : history) {
             messages.put(message("user", turn.prompt()));
-            messages.put(message("assistant", turn.reply()));
+            messages.put(message("assistant", turn.assistantText()));
         }
         messages.put(message("user", prompt));
         if (anthropic) return anthropicPayload(model.id(), messages, true, ANTHROPIC_MAX_TOKENS);
@@ -214,6 +218,11 @@ final class ModelApi {
 
     static void readStream(InputStream input, Cancellation cancellation, Consumer<String> delta, boolean anthropic)
             throws IOException {
+        readStream(input, cancellation, delta, anthropic, null);
+    }
+
+    static void readStream(InputStream input, Cancellation cancellation, Consumer<String> delta, boolean anthropic,
+                           IuiCall call) throws IOException {
         var reader = new BufferedReader(new InputStreamReader(new FilterInputStream(input) {
             private int remaining = MAX_RESPONSE;
 
@@ -235,7 +244,7 @@ final class ModelApi {
             firstLine = false;
             if (line.isEmpty()) {
                 // Only a blank line can dispatch an event, including on a truncated connection.
-                if (hasData && acceptEvent(eventType, data.toString(), delta, anthropic)) return;
+                if (hasData && acceptEvent(eventType, data.toString(), delta, anthropic, call)) return;
                 data.setLength(0);
                 eventType = "";
                 hasData = false;
@@ -257,7 +266,7 @@ final class ModelApi {
         throw new IOException("服务商连接提前结束。");
     }
 
-    private static boolean acceptEvent(String eventType, String data, Consumer<String> delta, boolean anthropic)
+    private static boolean acceptEvent(String eventType, String data, Consumer<String> delta, boolean anthropic, IuiCall call)
             throws IOException {
         if (eventType.equals("ping")) return false;
         if (data.isBlank()) {
@@ -270,14 +279,15 @@ final class ModelApi {
             if (eventType.equals("error") || !chunk.isNull("error") || "error".equals(chunk.optString("type"))) {
                 throw streamError(chunk);
             }
-            if (anthropic) return acceptAnthropic(eventType, chunk, delta);
+            if (anthropic) return acceptAnthropic(eventType, chunk, delta, call);
             JSONArray choices = chunk.optJSONArray("choices");
             if (choices == null) return false;
             for (int index = 0; index < choices.length(); index++) {
                 JSONObject choice = choices.getJSONObject(index);
                 if (choice.optInt("index", index) != 0) continue;
                 emitText(choice.optJSONObject("delta"), delta);
-                return finished(choice);
+                IuiCall.completions(call, choice.optJSONObject("delta"));
+                return finished(choice, call);
             }
             return false;
         } catch (JSONException invalid) {
@@ -286,14 +296,23 @@ final class ModelApi {
         }
     }
 
-    private static boolean acceptAnthropic(String eventType, JSONObject chunk, Consumer<String> delta) throws IOException {
+    private static boolean acceptAnthropic(String eventType, JSONObject chunk, Consumer<String> delta, IuiCall call)
+            throws IOException, JSONException {
         String type = chunk.optString("type", eventType);
         switch (type) {
-            case "content_block_start" -> emitBlockText(chunk.optJSONObject("content_block"), "text", delta);
-            case "content_block_delta" -> emitBlockText(chunk.optJSONObject("delta"), "text_delta", delta);
+            case "content_block_start" -> {
+                JSONObject block = chunk.optJSONObject("content_block");
+                emitBlockText(block, "text", delta);
+                IuiCall.anthropicStart(call, chunk.optInt("index", -1), block);
+            }
+            case "content_block_delta" -> {
+                JSONObject update = chunk.optJSONObject("delta");
+                emitBlockText(update, "text_delta", delta);
+                IuiCall.anthropicDelta(call, chunk.optInt("index", -1), update);
+            }
             case "message_delta" -> {
                 JSONObject update = chunk.optJSONObject("delta");
-                if (update != null) finishedAnthropic(update);
+                if (update != null) finishedAnthropic(update, call);
             }
             case "message_stop" -> { return true; }
         }
@@ -301,15 +320,25 @@ final class ModelApi {
     }
 
     static void acceptJson(JSONObject result, boolean anthropic, Consumer<String> delta) throws IOException, JSONException {
+        acceptJson(result, anthropic, delta, null);
+    }
+
+    static void acceptJson(JSONObject result, boolean anthropic, Consumer<String> delta, IuiCall call)
+            throws IOException, JSONException {
         if (!result.isNull("error") || "error".equals(result.optString("type"))) throw streamError(result);
         if (anthropic) {
             JSONArray content = result.getJSONArray("content");
-            for (int i = 0; i < content.length(); i++) emitBlockText(content.getJSONObject(i), "text", delta);
-            finishedAnthropic(result);
+            for (int i = 0; i < content.length(); i++) {
+                JSONObject block = content.getJSONObject(i);
+                emitBlockText(block, "text", delta);
+                IuiCall.anthropicStart(call, i, block);
+            }
+            finishedAnthropic(result, call);
         } else {
             JSONObject item = result.getJSONArray("choices").getJSONObject(0);
             emitText(item.optJSONObject("message"), delta);
-            finished(item);
+            IuiCall.completions(call, item.optJSONObject("message"));
+            finished(item, call);
         }
     }
 
@@ -318,12 +347,13 @@ final class ModelApi {
                 && !text.isEmpty()) delta.accept(text);
     }
 
-    private static void finishedAnthropic(JSONObject message) throws IOException {
+    private static void finishedAnthropic(JSONObject message, IuiCall call) throws IOException {
         if (!(message.opt("stop_reason") instanceof String reason)) return;
         switch (reason) {
             case "max_tokens", "model_context_window_exceeded" -> throw new IOException("模型达到输出或上下文上限，回复未完成。");
             case "refusal" -> throw new IOException("服务商停止了这条回复。");
-            case "tool_use", "pause_turn" -> throw new IOException("模型需要继续执行工具调用，无法完成这条回复。");
+            case "tool_use" -> IuiCall.finish(call);
+            case "pause_turn" -> throw new IOException("模型需要继续执行工具调用，无法完成这条回复。");
         }
     }
 
@@ -334,14 +364,15 @@ final class ModelApi {
         else if (message.opt("refusal") instanceof String refusal && !refusal.isEmpty()) delta.accept(refusal);
     }
 
-    private static boolean finished(JSONObject choice) throws IOException {
+    private static boolean finished(JSONObject choice, IuiCall call) throws IOException {
         if (!(choice.opt("finish_reason") instanceof String reason) || reason.isBlank()) return false;
         switch (reason) {
             case "length" -> throw new IOException("模型达到输出上限，回复未完成。");
             case "content_filter" -> throw new IOException("服务商停止了这条回复。");
             case "insufficient_system_resource" -> throw new IOException("服务商资源不足，回复未完成。");
             case "aborted" -> throw new IOException("服务商中断了回复。");
-            case "tool_calls", "function_call" -> throw new IOException("模型返回了工具调用，无法继续生成回复。");
+            case "tool_calls" -> IuiCall.finish(call);
+            case "function_call" -> throw new IOException("模型返回了工具调用，无法继续生成回复。");
         }
         // Some compatible endpoints close after finish_reason without sending [DONE].
         return true;

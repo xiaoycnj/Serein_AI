@@ -1,9 +1,22 @@
 <resources>
-    <style name="SereinTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="SereinTheme" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowBackground">#F8FAF7</item>
         <item name="android:windowSplashScreenBackground">#F8FAF7</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/serein_launcher</item>
-        <item name="android:colorAccent">#235543</item>
+        <item name="android:colorAccent">@color/serein_primary</item>
+        <item name="colorPrimary">@color/serein_primary</item>
+        <item name="colorOnPrimary">@color/serein_on_primary</item>
+        <item name="colorSecondary">@color/serein_secondary</item>
+        <item name="shapeAppearanceSmallComponent">@style/SereinShape.Small</item>
+        <item name="shapeAppearanceMediumComponent">@style/SereinShape.Medium</item>
+    </style>
+
+    <style name="SereinShape.Small" parent="ShapeAppearance.Material3.SmallComponent">
+        <item name="cornerSize">8dp</item>
+    </style>
+
+    <style name="SereinShape.Medium" parent="ShapeAppearance.Material3.MediumComponent">
+        <item name="cornerSize">12dp</item>
     </style>
 </resources>

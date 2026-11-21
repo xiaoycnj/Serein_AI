@@ -24,7 +24,7 @@ final class ChatContext {
 
     static long estimate(List<ChatHistory.Turn> history, String profile, String prompt) {
         long total = estimate(profile) + estimate(prompt);
-        for (ChatHistory.Turn turn : history) total += (long) estimate(turn.prompt()) + estimate(turn.reply());
+        for (ChatHistory.Turn turn : history) total += (long) estimate(turn.prompt()) + estimate(turn.assistantText());
         return total;
     }
 
@@ -102,7 +102,7 @@ final class ChatContext {
             append(result, pending, "\nUser: ", limit);
             append(result, pending, turn.prompt(), limit);
             append(result, pending, "\nAssistant: ", limit);
-            append(result, pending, turn.reply(), limit);
+            append(result, pending, turn.assistantText(), limit);
         }
         if (pending.length() > 0) result.add(pending.toString());
         if (result.size() > MAX_CHUNKS) throw new IOException("服务商待压缩的历史过长，请选择上下文更大的模型或新建聊天。");

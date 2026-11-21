@@ -3,10 +3,22 @@ plugins {
 }
 
 dependencies {
+    implementation 'com.google.android.material:material:1.13.0'
     implementation 'org.commonmark:commonmark:0.24.0'
     implementation 'org.commonmark:commonmark-ext-gfm-strikethrough:0.24.0'
     implementation 'org.commonmark:commonmark-ext-gfm-tables:0.24.0'
 }
+
+configurations {
+    chatCheckRuntime
+}
+
+dependencies {
+    chatCheckRuntime 'com.vaadin.external.google:android-json:0.0.20131108.vaadin1'
+}
+
+def releaseKey = providers.environmentVariable('SEREIN_RELEASE_KEYSTORE')
+def releasePassword = providers.environmentVariable('SEREIN_RELEASE_STORE_PASS')
 
 android {
     namespace 'app.serein.chat'
@@ -16,12 +28,44 @@ android {
         applicationId 'app.serein.chat'
         minSdk 33
         targetSdk 36
-        versionCode 6
-        versionName '0.0.6-alpha'
+        versionCode 7
+        versionName '0.0.7-alpha'
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    if (releaseKey.isPresent() && releasePassword.isPresent()) {
+        signingConfigs {
+            release {
+                storeFile file(releaseKey.get())
+                storePassword releasePassword.get()
+                keyAlias 'serein-release'
+                keyPassword releasePassword.get()
+            }
+        }
+        buildTypes.release.signingConfig signingConfigs.release
+    }
+}
+
+def appClasses = tasks.withType(JavaCompile).matching { it.name == 'compileDebugJavaWithJavac' }
+def chatChecksClasses = tasks.register('compileChatChecks', JavaCompile) {
+    dependsOn appClasses
+    source fileTree('src/test/java') { include '**/*Check.java' }
+    classpath = files(configurations.chatCheckRuntime, appClasses.collect { it.destinationDirectory },
+            providers.provider { android.bootClasspath })
+    destinationDirectory = layout.buildDirectory.dir('classes/chatChecks')
+    options.release = 17
+    options.encoding = 'UTF-8'
+}
+def chatChecks = tasks.register('chatChecks')
+['ModelApiStreamCheck', 'ChatFeatureCheck', 'IuiCheck'].each { check ->
+    def runCheck = tasks.register("run${check}", JavaExec) {
+        dependsOn chatChecksClasses
+        classpath = files(chatChecksClasses.flatMap { it.destinationDirectory }, chatChecksClasses.map { it.classpath })
+        mainClass = "app.serein.chat.${check}"
+    }
+    chatChecks.configure { dependsOn runCheck }
 }

@@ -30,20 +30,22 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 | 阶段 | 目标 | 验收条件 | 取舍 |
 | --- | --- | --- | --- |
-| Alpha 0.0.6（本次） | 完成核心对话与本地会话管理 | 支持流式回答、停止、Markdown、消息编辑/重试分支；会话置顶/取消置顶、重命名、删除在重启后保持正确；关键状态有 JVM 回归测试；发行 APK 可校验签名 | 置顶、改名和删除解决历史列表整理；不加入云同步 |
+| Alpha 0.0.6 | 完成核心对话与本地会话管理 | 支持流式回答、停止、Markdown、消息编辑/重试分支；会话置顶/取消置顶、重命名、删除在重启后保持正确 | 不加入云同步 |
+| Alpha 0.0.7 | 统一常用控件，验证聊天内交互卡片 | 聊天和设置共用 Material 控件；可离线体验清单；在线卡片可关闭，卡片状态留在本机 | 不加入确认执行、文件或工具编排 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史查找与数据可控性 | 先收集本机聊天数量、找回旧会话的实际需求；如搜索进入排期，需覆盖标题与消息内容且只在本机查询；数据导出需能验证格式并明确敏感信息处理 | 搜索、导出和更细的保留控制暂不承诺版本 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.6
+## Alpha 0.0.7
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 每轮消息下方可编辑提问、重新生成回复。两种操作都会创建版本，原回答与后续对话可以通过版本按钮切回。
 - 在侧栏的会话选项里置顶、重命名或删除会话。置顶状态加密保存在本机，新消息不会让置顶会话移出顶部；重命名保留消息和版本。确认删除后，本机记录及其全部版本会被移除。
 - 在「账户」保存显示名称和简介。资料在本机加密保存，开启「随聊天发送账户资料」后才会放入在线请求的系统提示词。
-- 「设置 → 自定义插件」提供两个默认关闭的聊天扩展。自动压缩保留最近四轮和当前提问，将较早的历史分段发给本轮服务商生成摘要，可能产生额外费用。原文仍保存在本机。自动路由在当前服务商已配置的模型中，按提问类型、上下文容量和目录价格选择。实际模型显示在回复旁，手动选模型可退出自动路由。
+- 「设置 → 自定义插件」的聊天扩展默认关闭。自动压缩保留最近四轮和当前提问，将较早的历史分段发给本轮服务商生成摘要，可能产生额外费用。原文仍保存在本机。自动路由在当前服务商已配置的模型中，按提问类型、上下文容量和目录价格选择。实际模型显示在回复旁，手动选模型可退出自动路由。
+- 同处可开启在线「交互卡片」，需要模型及接口支持函数调用。移植了 [AstraAgent 的 IUI](https://github.com/xiaoycnj/AstraAgent/blob/main/docs/INTELLIGENT-UI.md) 子集：说明、指标、对比、清单和单选。不支持表单、图表或执行确认。卡片不加载网页、脚本或网络资源；选择按消息版本加密保存，不会自动发送。「加入草稿」保留原有输入，聊天仍由用户手动发送。在离线演示点击「试试交互清单」可以直接体验。
 - 消息支持原生 Markdown 富文本，包括标题、粗体、斜体、引用、列表、代码、链接和表格。长按可选择文本。图片仅显示替代文字，HTML 以文本显示。
 - SSE 按协议读取正文和结束状态。Markdown 刷新与屏幕帧对齐，向上翻阅时保留当前滚动位置，回到末尾后恢复跟随。停止生成或连接中断时，已收到的正文会存入聊天记录。回复开头前三个可见字符有短暂的模糊渐入，可在「外观 → 减少动效」关闭，也遵循系统动画设置。
 - 在「会话 → 设置 → 服务商连接」填写带 API 路径的 HTTPS 根地址。OpenAI、DeepSeek 和兼容网关沿用 Chat Completions。填写 `https://api.anthropic.com/v1` 会使用官方 Anthropic Messages API，思考强度由模型决定。配置 Key 后可拉取模型列表或手动填写模型 ID，从聊天顶部切换模型。
@@ -52,11 +54,11 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 - 在模型设置中选择适用的思考参数。键盘展开时，输入框上方显示档位滑块。选择「默认」时由服务商决定。请按所用模型的文档选择 `reasoning_effort` 或 DeepSeek 档位。
 - 外观包含自定义主题色、纯色与渐变背景、本机图片，以及实色、扁平和磨砂材质。列表、按钮和页面切换使用非线性与弹簧反馈，尊重应用和系统的减少动效设置。
 - 升级首次启动时会加密迁移会话。会话和服务商配置使用 Android Keystore 管理的密钥加密，应用备份已禁用，在线请求通过 HTTPS 发送给用户选择的服务商。
-- 可用 Android Studio 打开根工程。Windows 上也能用 JDK 17+、Android SDK Platform 36 和 Build-Tools 35.0.0 直接构建。
+- 可用 Android Studio 打开根工程。Windows 脚本使用同一套 Gradle Wrapper（8.13），需要 JDK 17+、Android SDK Platform 36 和 Build-Tools 35.0.0。首次构建需下载 Gradle 和依赖。
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.6.apk
+adb install -r .\outputs\Serein-Alpha-0.0.7.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
@@ -75,6 +77,7 @@ Serein 的原创代码和资源采用 [MIT 许可证](LICENSE)。第三方资源
 
 - 应用通用图标使用 [Lucide v0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0)。
 - Markdown 解析使用 [commonmark-java 0.24.0（BSD 2-Clause）](https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.24.0)。
+- 通用控件使用 [Material Components for Android 1.13.0（Apache 2.0）](https://github.com/material-components/material-components-android/releases/tag/1.13.0)。
 - 搜索图标来自 [Tabler Icons v3.41.0（MIT）](https://github.com/tabler/tabler-icons/tree/v3.41.0)，设计资源也可通过 [官方 Figma 插件](https://www.figma.com/community/plugin/1169807996149376642/Tabler-Icons) 获取。
 - 模型品牌向量来自 [Lobe Icons（MIT）](https://github.com/lobehub/lobe-icons/tree/9752d967494e48d8f83f2808feb2b0207bf70997)。
 - 离线目录从 [LiteLLM 固定快照（MIT）](https://github.com/BerriAI/litellm/blob/ac7674625ceed298d6c411cc964f23aded63989d/model_prices_and_context_window.json) 筛选生成，使用 [AstraAgent 固定目录](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/models/registry.json) 补充规格与档位。可用 `scripts/update-model-catalog.ps1 -Source <LiteLLM 快照路径> -AstraRegistry <AstraAgent 目录快照路径>` 重建。模型可用性及实际价格由服务商决定。

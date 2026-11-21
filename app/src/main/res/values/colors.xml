@@ -1,3 +1,6 @@
 <resources>
     <color name="serein_icon_background">#E4EFE3</color>
+    <color name="serein_primary">#235543</color>
+    <color name="serein_on_primary">#FFFFFF</color>
+    <color name="serein_secondary">#547260</color>
 </resources>

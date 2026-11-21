@@ -23,12 +23,20 @@ final class Motion {
 
     static void press(View view, java.util.function.BooleanSupplier enabled) {
         view.setOnTouchListener((button, event) -> {
-            if (!enabled.getAsBoolean() || !button.isEnabled()) return false;
             switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN -> button.animate().scaleX(.96f).scaleY(.93f)
-                        .setInterpolator(EASE).setDuration(95).start();
-                case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> button.animate().scaleX(1).scaleY(1)
-                        .setInterpolator(SPRING).setDuration(320).start();
+                case MotionEvent.ACTION_DOWN -> {
+                    if (enabled.getAsBoolean() && button.isEnabled()) button.animate().scaleX(.98f).scaleY(.95f)
+                            .setInterpolator(EASE).setDuration(95).start();
+                }
+                case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (enabled.getAsBoolean()) button.animate().scaleX(1).scaleY(1)
+                            .setInterpolator(SPRING).setDuration(290).start();
+                    else {
+                        button.animate().cancel();
+                        button.setScaleX(1);
+                        button.setScaleY(1);
+                    }
+                }
             }
             return false;
         });

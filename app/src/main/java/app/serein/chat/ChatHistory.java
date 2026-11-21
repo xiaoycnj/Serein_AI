@@ -11,7 +11,13 @@ import java.util.List;
 import java.util.Map;
 
 final class ChatHistory {
-    record Turn(String prompt, String reply, String model) {}
+    record Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState) {
+        Turn(String prompt, String reply, String model) { this(prompt, reply, model, null, Map.of()); }
+
+        String assistantText() {
+            return card == null ? reply : (reply.isBlank() ? "" : reply + "\n\n") + card.transcript();
+        }
+    }
     private record Node(int parent, Turn turn) {}
 
     private final List<Node> nodes = new ArrayList<>();
@@ -24,7 +30,19 @@ final class ChatHistory {
             JSONObject row = saved.getJSONObject(i);
             int parent = row.optInt("parent", i - 1);
             if (parent < -1 || parent >= i) throw new JSONException("Invalid chat parent");
-            history.append(parent, new Turn(row.getString("prompt"), row.getString("reply"), row.optString("model", "Serein")));
+            ChatCard card = row.has("card") ? ChatCard.read(row.getJSONObject("card")) : null;
+            Map<String, Object> state = new HashMap<>();
+            JSONObject savedState = row.optJSONObject("cardState");
+            if (card != null && savedState != null) {
+                var keys = savedState.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    Object value = savedState.get(key);
+                    if (card.validState(key, value)) state.put(key, value);
+                }
+            }
+            history.append(parent, new Turn(row.getString("prompt"), row.getString("reply"),
+                    row.optString("model", "Serein"), card, Map.copyOf(state)));
         }
         if (selected >= 0) history.select(selected);
         return history;
@@ -34,8 +52,10 @@ final class ChatHistory {
         JSONArray saved = new JSONArray();
         for (Node node : nodes) {
             Turn turn = node.turn();
-            saved.put(new JSONObject().put("parent", node.parent()).put("prompt", turn.prompt())
-                    .put("reply", turn.reply()).put("model", turn.model()));
+            JSONObject row = new JSONObject().put("parent", node.parent()).put("prompt", turn.prompt())
+                    .put("reply", turn.reply()).put("model", turn.model());
+            if (turn.card() != null) row.put("card", turn.card().write()).put("cardState", new JSONObject(turn.cardState()));
+            saved.put(row);
         }
         return saved;
     }
@@ -43,6 +63,8 @@ final class ChatHistory {
     int leaf() { return leaf; }
     int parent(int id) { return nodes.get(id).parent(); }
     Turn turn(int id) { return nodes.get(id).turn(); }
+
+    void replace(int id, Turn turn) { nodes.set(id, new Node(parent(id), turn)); }
 
     List<Integer> path(int tip) {
         List<Integer> path = new ArrayList<>();
