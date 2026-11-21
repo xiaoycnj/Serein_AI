@@ -1,13 +1,14 @@
-param([string]$Serial, [switch]$ProviderControls, [string]$PickerScreenshot, [string]$RemoveTestProvider)
+param([string]$Serial, [switch]$ProviderControls, [switch]$OfflineModel, [string]$PickerScreenshot, [string]$RemoveTestProvider)
 
 $ErrorActionPreference = 'Stop'
 $adb = (Get-Command adb).Source
 $package = 'app.serein.chat'
 $device = @(if ($Serial) { '-s'; $Serial } else { '-d' })
 $dump = '/data/local/tmp/serein-smoke.xml'
-$testMessage = 'Alpha003-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
+$testMessage = 'Alpha005-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
 $samplePrompt = '帮我理顺今天的安排'
-$sampleReply = "先写下今天非做不可的一件事，给它留一段完整的时间。其余事项按截止时间排，最后给自己留一点空当。`n`n今天最想先完成哪件事？"
+$sampleReply = '先写下今天非做不可的一件事'
+$script:OriginalModelTitle = $null
 
 function Invoke-Adb {
     $result = & $adb @device @args
@@ -17,19 +18,25 @@ function Invoke-Adb {
 
 function Get-Screen {
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
-        $receipt = Invoke-Adb shell uiautomator dump $dump
-        if (($receipt -join ' ') -match [regex]::Escape($dump)) {
-            $hierarchy = Invoke-Adb shell cat $dump
-            return [xml]($hierarchy -join "`n")
+        $receipt = & $adb @device shell uiautomator dump $dump 2>&1
+        $dumpExitCode = $LASTEXITCODE
+        if ($dumpExitCode -eq 0 -and ($receipt -join ' ') -match [regex]::Escape($dump)) {
+            try {
+                $hierarchy = Invoke-Adb shell cat $dump
+                return [xml]($hierarchy -join "`n")
+            } catch {
+                if ($attempt -eq 2) { throw }
+            }
         }
         Start-Sleep -Milliseconds 300
     }
     throw "Could not read a fresh UI snapshot: $receipt"
 }
 
-function Find-Element([xml]$Screen, [string]$Label) {
+function Find-Element([xml]$Screen, [string]$Label, [string]$Class) {
     foreach ($node in $Screen.SelectNodes('//node')) {
-        if ($node.package -eq $package -and ($node.text -eq $Label -or $node.'content-desc' -eq $Label)) {
+        if ($node.package -eq $package -and (!$Class -or $node.class -eq $Class) -and
+            ($node.text -eq $Label -or $node.'content-desc' -eq $Label)) {
             return $node
         }
     }
@@ -38,6 +45,62 @@ function Find-Element([xml]$Screen, [string]$Label) {
 
 function Assert-Visible([string]$Label) {
     if (!(Find-Element (Get-Screen) $Label)) { throw "Expected to find '$Label' in Serein." }
+}
+
+function Find-ContainingText([xml]$Screen, [string]$Fragment) {
+    foreach ($node in $Screen.SelectNodes('//node')) {
+        if ($node.package -eq $package -and $node.text.Contains($Fragment)) { return $node }
+    }
+    return $null
+}
+
+function Wait-ContainingText([string]$Fragment) {
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        $node = Find-ContainingText (Get-Screen) $Fragment
+        if ($node) { return $node }
+        Start-Sleep -Milliseconds 300
+    }
+    throw "Expected to find '$Fragment' after sending."
+}
+
+function Select-OfflineModel {
+    $screen = Get-Screen
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        if (Find-Element $screen '最近会话') {
+            Tap-Label '关闭侧栏'
+        } elseif (Find-Element $screen '返回') {
+            Tap-Label '返回'
+        } else {
+            break
+        }
+        $screen = Get-Screen
+    }
+    $chooser = $screen.SelectNodes('//node') | Where-Object {
+        $_.package -eq $package -and $_.'content-desc' -like '选择模型，当前 *'
+    } | Select-Object -First 1
+    if (!$chooser -or $chooser.'content-desc' -notmatch '^选择模型，当前 (.+)$') { throw 'Could not read the currently selected model.' }
+    if ($Matches[1] -eq '离线演示') { $script:OriginalModelTitle = '离线演示'; return }
+    $script:OriginalModelTitle = $Matches[1]
+    Tap-Node $chooser '选择模型'
+    $offline = (Get-Screen).SelectNodes('//node') | Where-Object {
+        $_.package -eq $package -and $_.text -eq '离线演示'
+    } | Select-Object -First 1
+    Tap-Node $offline '离线演示'
+    Wait-Visible '选择模型，当前 离线演示'
+}
+
+function Restore-SelectedModel {
+    if (!$OfflineModel -or !$script:OriginalModelTitle -or $script:OriginalModelTitle -eq '离线演示') { return }
+    $screen = Get-Screen
+    $chooser = $screen.SelectNodes('//node') | Where-Object {
+        $_.package -eq $package -and $_.'content-desc' -like '选择模型，当前 *'
+    } | Select-Object -First 1
+    if (!$chooser) { Write-Warning 'Could not restore the previous model because the test did not finish on the chat screen.'; return }
+    Tap-Node $chooser '选择模型'
+    Type-Text '搜索模型或服务商' $script:OriginalModelTitle
+    Tap-Label $script:OriginalModelTitle
+    Wait-Visible "选择模型，当前 $($script:OriginalModelTitle)"
+    Write-Output "PASS: restored the previous model ($($script:OriginalModelTitle))"
 }
 
 function Wait-Visible([string]$Label) {
@@ -49,8 +112,13 @@ function Wait-Visible([string]$Label) {
 }
 
 function Tap-Label([string]$Label) {
-    $node = Find-Element (Get-Screen) $Label
-    Tap-Node $node $Label
+    $class = if ($Label -eq '关闭侧栏') { 'android.widget.ImageButton' }
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $node = Find-Element (Get-Screen) $Label $class
+        if ($node) { Tap-Node $node $Label; return }
+        Start-Sleep -Milliseconds 300
+    }
+    throw "Could not tap '$Label' in Serein."
 }
 
 function Tap-Node($node, [string]$Label, [switch]$NearEnd) {
@@ -65,10 +133,17 @@ function Tap-Node($node, [string]$Label, [switch]$NearEnd) {
 
 function Type-Text([string]$Field, [string]$Value) {
     $input = (Get-Screen).SelectNodes('//node') | Where-Object {
-        $_.package -eq $package -and $_.class -eq 'android.widget.EditText' -and $_.text -eq $Field
+        $_.package -eq $package -and $_.class -eq 'android.widget.EditText' -and ($_.text -eq $Field -or $_.hint -eq $Field)
     } | Select-Object -First 1
     Tap-Node $input $Field
-    Invoke-Adb shell input text $Value | Out-Null
+    $existing = [string]$input.text
+    if ($existing -and $existing -ne $Field) {
+        Invoke-Adb shell input keyevent KEYCODE_MOVE_END | Out-Null
+        for ($index = 0; $index -lt $existing.Length; $index++) {
+            Invoke-Adb shell input keyevent KEYCODE_DEL | Out-Null
+        }
+    }
+    if ($Value) { Invoke-Adb shell input text ($Value -replace ' ', '%s') | Out-Null }
 }
 
 function Test-ProviderControls {
@@ -138,6 +213,7 @@ function Test-ProviderControls {
     Tap-Label '关闭侧栏'
     $chooser = (Get-Screen).SelectNodes('//node') | Where-Object { $_.package -eq $package -and $_.'content-desc' -like '选择模型，当前 *' } | Select-Object -First 1
     Tap-Node $chooser '选择模型'
+    Type-Text '搜索模型或服务商' 'gpt-5-mini'
     Assert-Visible 'GPT-5 mini QA'
     if ($PickerScreenshot) {
         $remote = '/data/local/tmp/serein-picker.png'
@@ -195,6 +271,20 @@ function Test-ProviderControls {
     Write-Output 'PASS: appearance controls and navigation'
 }
 
+function Test-AccountControls {
+    Tap-Label '账户'
+    $screen = Get-Screen
+    $fields = $screen.SelectNodes('//node') | Where-Object {
+        $_.package -eq $package -and $_.class -eq 'android.widget.EditText'
+    }
+    $nameField = $fields | Where-Object { $_.hint -eq '本机账户' } | Select-Object -First 1
+    $bioField = $fields | Where-Object { $_.hint -eq '个人简介' } | Select-Object -First 1
+    $shareNode = Find-Element $screen '随聊天发送账户资料' 'android.widget.Switch'
+    if (!$nameField -or !$bioField -or !$shareNode) { throw 'Account profile controls were not exposed in the UI tree.' }
+    Write-Output 'PASS: account controls are available (read-only check)'
+    Tap-Label '返回'
+}
+
 function Start-Serein {
     $status = Invoke-Adb shell am start -W -n "$package/.MainActivity"
     if (($status -join "`n") -notmatch 'Status: ok') { throw ($status -join "`n") }
@@ -206,12 +296,37 @@ try {
         Test-ProviderControls
         return
     }
+    if ($OfflineModel) { Select-OfflineModel }
+    Assert-Visible '选择模型，当前 离线演示'
     Tap-Label '新建聊天'
     Assert-Visible '今天想聊什么？'
     Tap-Label $samplePrompt
     Tap-Label '发送'
-    Assert-Visible $sampleReply
-    Write-Output 'PASS: send the sample prompt'
+    Wait-ContainingText $sampleReply | Out-Null
+    Write-Output 'PASS: send the sample prompt and render the offline reply'
+
+    Tap-Label '重新生成'
+    $versions = $null
+    for ($attempt = 0; $attempt -lt 12 -and !$versions; $attempt++) {
+        $versions = (Get-Screen).SelectNodes('//node') | Where-Object {
+            $_.package -eq $package -and $_.'content-desc' -match '^切换版本，当前第 2 个，共 2 个$'
+        } | Select-Object -First 1
+        if (!$versions) { Start-Sleep -Milliseconds 300 }
+    }
+    if (!$versions) { throw 'Regenerating a reply did not create a second selectable version.' }
+    $version = $versions
+    Tap-Node $version '切换版本'
+    $firstVersion = Find-ContainingText (Get-Screen) '1 · 帮我理顺今天的安排'
+    if (!$firstVersion) { throw 'The original message version was not offered.' }
+    Tap-Node $firstVersion 'Original message version'
+    Assert-Visible '切换版本，当前第 1 个，共 2 个'
+    Write-Output 'PASS: regenerate a reply and switch back to the original version'
+
+    Tap-Label '编辑提问'
+    Assert-Visible '编辑提问'
+    if (!(Find-Element (Get-Screen) $samplePrompt)) { throw 'The edit dialog did not preserve the selected prompt.' }
+    Tap-Label '取消'
+    Write-Output 'PASS: open and cancel the prompt editor without changing history'
 
     Tap-Label '新建聊天'
     Tap-Label '发消息'
@@ -225,7 +340,7 @@ try {
 
     Tap-Label '会话'
     Tap-Label $samplePrompt
-    Assert-Visible $sampleReply
+    Wait-ContainingText $sampleReply | Out-Null
     Tap-Label '会话'
     Assert-Visible '最近会话'
     Invoke-Adb shell input keyevent KEYCODE_BACK | Out-Null
@@ -236,9 +351,7 @@ try {
     Write-Output 'PASS: revisit history and dismiss drawer with Back'
 
     Tap-Label '会话'
-    Tap-Label '账户'
-    Assert-Visible '显示名称'
-    Tap-Label '返回'
+    Test-AccountControls
     Tap-Label '设置'
     $settings = Get-Screen
     $sections = '服务商连接', '外观', '自定义插件', '关于', '相关政策', '开源声明'
@@ -249,11 +362,18 @@ try {
     Assert-Visible '减少动效'
     Tap-Label '返回'
     Tap-Label '关于'
-    Assert-Visible 'Alpha 0.0.3 · Android 13+'
+    Assert-Visible 'Alpha 0.0.5 · Android 13+'
+    Tap-Label '返回'
+    Tap-Label '自定义插件'
+    $extensions = Get-Screen
+    foreach ($label in '自动压缩上下文', '自动模型路由') {
+        if (!(Find-Element $extensions $label 'android.widget.Switch')) { throw "Missing extension switch '$label'." }
+    }
     Tap-Label '返回'
     Tap-Label '返回'
     Tap-Label '关闭侧栏'
     Write-Output 'PASS: account, all six settings entries, appearance and version'
+    if ($OfflineModel) { Restore-SelectedModel }
 } finally {
     Invoke-Adb shell rm -f $dump | Out-Null
 }

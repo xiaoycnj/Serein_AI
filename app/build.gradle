@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application' version '8.13.2'
 }
 
+dependencies {
+    implementation 'org.commonmark:commonmark:0.24.0'
+    implementation 'org.commonmark:commonmark-ext-gfm-strikethrough:0.24.0'
+    implementation 'org.commonmark:commonmark-ext-gfm-tables:0.24.0'
+}
+
 android {
     namespace 'app.serein.chat'
     compileSdk 36
@@ -10,8 +16,8 @@ android {
         applicationId 'app.serein.chat'
         minSdk 33
         targetSdk 36
-        versionCode 3
-        versionName '0.0.3-alpha'
+        versionCode 5
+        versionName '0.0.5-alpha'
     }
 
     compileOptions {

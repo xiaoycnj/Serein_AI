@@ -18,12 +18,16 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.text.method.LinkMovementMethod;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -70,23 +74,26 @@ public final class MainActivity extends Activity {
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
             new Section("appearance", "外观", "主题与动效", R.drawable.ic_sun),
-            new Section("plugins", "自定义插件", "尚未开放", R.drawable.ic_puzzle),
-            new Section("about", "关于", "Alpha 0.0.3", R.drawable.ic_info),
+            new Section("plugins", "自定义插件", "上下文压缩与模型路由", R.drawable.ic_puzzle),
+            new Section("about", "关于", "Alpha 0.0.5", R.drawable.ic_info),
             new Section("policy", "相关政策", "本机数据", R.drawable.ic_shield),
             new Section("licenses", "开源声明", "依赖与素材", R.drawable.ic_file),
     };
 
     private SharedPreferences prefs;
     private ChatStore store;
+    private AccountProfile profile;
+    private Vault vault;
     private Providers providers;
     private ModelCatalog modelCatalog;
     private String providerPage;
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout root;
     private FrameLayout drawer;
     private LinearLayout screen;
     private View drawerTrigger;
-    private ScrollView chatScroll;
+    private TranscriptScroll chatScroll;
     private EditText input;
     private View reasoningRow;
     private ImageButton sendButton;
@@ -94,6 +101,11 @@ public final class MainActivity extends Activity {
     private boolean sending;
     private String pendingPrompt;
     private String replyStatus;
+    private StreamReply streamReply;
+    private ReplyText liveReply;
+    private TextView liveStatus;
+    private LinearLayout liveActions;
+    private String liveSource;
     private Bitmap wallpaper;
     private static final int PICK_BACKGROUND = 870;
     private String page = CHAT;
@@ -107,9 +119,12 @@ public final class MainActivity extends Activity {
         super.onCreate(saved);
         prefs = getSharedPreferences("serein", MODE_PRIVATE);
         setRecentsScreenshotEnabled(false);
-        Vault vault = new Vault(prefs);
+        vault = new Vault(prefs);
         try {
             store = new ChatStore(prefs, vault);
+            String savedProfile = vault.read("profile", null);
+            profile = AccountProfile.read(savedProfile, prefs.getString("profile_name", ""));
+            if (savedProfile == null && prefs.contains("profile_name")) vault.write("profile", profile.encode(), "profile_name");
             modelCatalog = ModelCatalog.load(getAssets());
             providers = new Providers(vault, modelCatalog);
         } catch (RuntimeException error) {
@@ -148,6 +163,8 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (streamReply != null) cancelStream(streamReply);
+        ui.removeCallbacksAndMessages(null);
         worker.shutdownNow();
         if (backRegistered) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         super.onDestroy();
@@ -192,6 +209,11 @@ public final class MainActivity extends Activity {
         input = null;
         reasoningRow = null;
         sendButton = null;
+        chatScroll = null;
+        liveReply = null;
+        liveStatus = null;
+        liveActions = null;
+        liveSource = null;
         if (page.equals(CHAT)) renderChat();
         else renderPage();
         screen.requestFocus();
@@ -219,7 +241,7 @@ public final class MainActivity extends Activity {
         label.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
         label.addView(icon(R.drawable.ic_chevron, 12, muted));
         identity.addView(label, new LinearLayout.LayoutParams(MATCH, WRAP));
-        TextView mode = text(choice == null ? "离线演示" : choice.provider().label, 11, muted, false);
+        TextView mode = text(choice == null ? "离线演示" : choice.provider().label + (autoRoute() ? " · 自动路由" : ""), 11, muted, false);
         mode.setGravity(Gravity.CENTER);
         mode.setSingleLine(true);
         mode.setEllipsize(TextUtils.TruncateAt.END);
@@ -234,7 +256,7 @@ public final class MainActivity extends Activity {
         toolbar.addView(iconButton("新建聊天", R.drawable.ic_plus, ink, 0, this::newChat));
         screen.addView(toolbar);
 
-        chatScroll = scroll();
+        chatScroll = new TranscriptScroll();
         chatScroll.setFillViewport(true);
         screen.addView(chatScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         renderMessages();
@@ -261,7 +283,10 @@ public final class MainActivity extends Activity {
         input.setEnabled(!sending);
         composer.addView(input, new LinearLayout.LayoutParams(0, WRAP, 1));
 
-        ImageButton send = iconButton("发送", R.drawable.ic_send, onAccent, accent, this::send);
+        ImageButton send = iconButton("发送", R.drawable.ic_send, onAccent, accent, () -> {
+            if (streamReply != null) stopReply();
+            else send();
+        });
         sendButton = send;
         send.setBackground(ripple(accent, 24));
         composer.addView(send);
@@ -282,7 +307,13 @@ public final class MainActivity extends Activity {
     }
 
     private void updateSend(ImageButton button) {
-        boolean ready = !draft.isBlank() && !sending;
+        boolean ready = sending || !draft.isBlank();
+        String label = sending ? "停止生成" : "发送";
+        if (!label.contentEquals(button.getContentDescription())) {
+            button.setImageResource(sending ? R.drawable.ic_stop : R.drawable.ic_send);
+            button.setContentDescription(label);
+            button.setTooltipText(label);
+        }
         button.setEnabled(ready);
         button.setAlpha(ready ? 1f : .44f);
     }
@@ -353,6 +384,16 @@ public final class MainActivity extends Activity {
     }
 
     private void renderMessages() {
+        renderMessages(true);
+    }
+
+    private void renderMessages(boolean followLatest) {
+        int previousY = chatScroll.getScrollY();
+        liveReply = null;
+        liveStatus = null;
+        liveActions = null;
+        liveSource = null;
+        chatScroll.restorePosition(followLatest, previousY);
         chatScroll.removeAllViews();
         if (store.active == null && pendingPrompt == null && replyStatus == null) {
             LinearLayout welcome = column();
@@ -376,39 +417,125 @@ public final class MainActivity extends Activity {
 
         LinearLayout transcript = column();
         transcript.setPadding(dp(18), dp(16), dp(18), dp(12));
-        for (ChatStore.Turn turn : store.active == null ? List.<ChatStore.Turn>of() : store.active.turns) {
-            messageBubble(transcript, turn.prompt());
-            space(transcript, 15);
-
-            LinearLayout byline = row();
-            byline.setGravity(Gravity.CENTER_VERTICAL);
-            byline.addView(logo(28));
-            TextView name = text(turn.model(), 13, ink, true);
-            name.setPadding(dp(6), 0, 0, 0);
-            byline.addView(name);
-            transcript.addView(byline);
-            TextView reply = text(turn.reply(), 16, ink, false);
-            reply.setTextIsSelectable(true);
-            reply.setLineSpacing(dp(4), 1);
-            reply.setPadding(0, dp(6), 0, dp(4));
-            transcript.addView(reply);
-            space(transcript, 20);
+        if (store.active != null) {
+            ChatHistory history = store.active.history;
+            for (int id : history.path(streamReply == null ? history.leaf() : streamReply.parent)) {
+                ChatHistory.Turn turn = history.turn(id);
+                messageBubble(transcript, turn.prompt());
+                space(transcript, 15);
+                ReplyText reply = replyView(transcript, turn.model(), false);
+                reply.update(markdown(turn.reply()), false, dp(4));
+                messageActions(transcript, id);
+                space(transcript, 8);
+            }
         }
-        if (pendingPrompt != null) messageBubble(transcript, pendingPrompt);
+        if (pendingPrompt != null) {
+            messageBubble(transcript, pendingPrompt);
+            space(transcript, 15);
+            liveReply = replyView(transcript, streamReply.model, true);
+            liveReply.setVisibility(View.GONE);
+        }
         if (replyStatus != null) {
             TextView status = text(replyStatus, 14, muted, false);
             status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-            status.setPadding(0, dp(12), 0, dp(8));
+            status.setPadding(0, dp(6), 0, dp(8));
             transcript.addView(status);
+            liveStatus = status;
+        }
+        if (pendingPrompt != null) {
+            liveActions = column();
+            transcript.addView(liveActions);
         }
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
-        ScrollView visibleTranscript = chatScroll;
-        visibleTranscript.post(() -> visibleTranscript.scrollTo(0, transcript.getHeight()));
+        if (streamReply != null) showStream(streamReply, streamReply.snapshot(), true);
+    }
+
+    private ReplyText replyView(LinearLayout transcript, String model, boolean live) {
+        LinearLayout byline = row();
+        byline.setGravity(Gravity.CENTER_VERTICAL);
+        byline.addView(logo(28));
+        TextView name = text(model, 13, ink, true);
+        name.setPadding(dp(6), 0, 0, 0);
+        byline.addView(name);
+        transcript.addView(byline);
+        ReplyText reply = new ReplyText(this);
+        reply.setTextColor(ink);
+        reply.setTextSize(16);
+        reply.setTextIsSelectable(!live);
+        if (!live) reply.setMovementMethod(LinkMovementMethod.getInstance());
+        int linkColor = contrast(accent, paper) >= 4.5 ? accent : ink;
+        reply.setLinkTextColor(linkColor);
+        reply.setLineSpacing(dp(4), 1);
+        reply.setPadding(dp(8), dp(6), dp(8), dp(5));
+        if (wallpaper != null && prefs.getString("background", "plain").equals("image")) {
+            reply.setBackground(shape(paper, 8, 0));
+        }
+        transcript.addView(reply, new LinearLayout.LayoutParams(MATCH, WRAP));
+        return reply;
+    }
+
+    private android.text.SpannableStringBuilder markdown(String source) {
+        return MarkdownText.render(source, ink, muted, tint, dp(9));
+    }
+
+    private static double contrast(int first, int second) {
+        double light = Color.luminance(first), dark = Color.luminance(second);
+        return (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05);
+    }
+
+    private void showStream(StreamReply stream, String source, boolean allowOpening) {
+        if (streamReply != stream || liveReply == null || source.isBlank() || source.equals(liveSource)) return;
+        var content = markdown(source);
+        if (content.length() == 0) return;
+        boolean animate = allowOpening && motionEnabled() && (!stream.presented || liveReply.hasOpening());
+        stream.presented = true;
+        liveSource = source;
+        if (liveStatus != null) liveStatus.setVisibility(View.GONE);
+        liveReply.setVisibility(View.VISIBLE);
+        liveReply.update(content, animate, dp(4));
+    }
+
+    private final class TranscriptScroll extends ScrollView {
+        private boolean following = true;
+        private boolean layingOut;
+        private int restoreY = -1;
+
+        TranscriptScroll() {
+            super(MainActivity.this);
+            setVerticalScrollBarEnabled(false);
+        }
+
+        void restorePosition(boolean follow, int y) {
+            following = follow;
+            restoreY = y;
+        }
+
+        @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            int y = restoreY >= 0 ? restoreY : getScrollY();
+            layingOut = true;
+            try {
+                super.onLayout(changed, left, top, right, bottom);
+                if (getChildCount() > 0) scrollTo(0, following ? getChildAt(0).getBottom() : y);
+            } finally {
+                layingOut = false;
+                restoreY = -1;
+            }
+        }
+
+        @Override protected void onScrollChanged(int x, int y, int oldX, int oldY) {
+            super.onScrollChanged(x, y, oldX, oldY);
+            if (layingOut || restoreY >= 0 || y == oldY || getChildCount() == 0) return;
+            following = y > oldY && getChildAt(0).getBottom() - getHeight() - y <= dp(56);
+        }
     }
 
     private void messageBubble(LinearLayout transcript, String message) {
-        TextView user = text(message, 16, ink, false);
+        TextView user = text("", 16, ink, false);
         user.setTextIsSelectable(true);
+        user.setText(markdown(message), TextView.BufferType.SPANNABLE);
+        user.setMovementMethod(LinkMovementMethod.getInstance());
+        user.setLinkTextColor(contrast(accent, tint) >= 4.5 ? accent : ink);
+        user.setLineSpacing(dp(4), 1);
         user.setPadding(dp(14), dp(10), dp(14), dp(10));
         user.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * .76));
         user.setBackground(shape(tint, 18, 0));
@@ -417,65 +544,310 @@ public final class MainActivity extends Activity {
         transcript.addView(user, bubble);
     }
 
+    private void messageActions(LinearLayout transcript, int id) {
+        LinearLayout actions = row();
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
+        actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
+            if (sending) { notice("请先停止当前生成"); return; }
+            ChatHistory history = store.active.history;
+            submit(history.turn(id).prompt(), history.parent(id), false);
+        }));
+        ChatHistory history = store.active.history;
+        List<Integer> versions = history.variants(id);
+        if (versions.size() > 1) {
+            int current = versions.indexOf(id);
+            TextView count = text((current + 1) + " / " + versions.size(), 13, muted, true);
+            count.setGravity(Gravity.CENTER);
+            count.setMinHeight(dp(48));
+            count.setMinWidth(dp(60));
+            count.setBackground(ripple(0, 8));
+            count.setContentDescription("切换版本，当前第 " + (current + 1) + " 个，共 " + versions.size() + " 个");
+            count.setOnClickListener(v -> {
+                if (sending) { notice("请先停止当前生成"); return; }
+                String[] labels = new String[versions.size()];
+                for (int i = 0; i < labels.length; i++) {
+                    ChatHistory.Turn version = history.turn(versions.get(i));
+                    labels[i] = (i + 1) + " · " + preview(version.prompt(), 32) + "\n" + preview(version.reply(), 56);
+                }
+                showDialog(new AlertDialog.Builder(this).setTitle("对话版本").setSingleChoiceItems(labels, current, (dialog, index) -> {
+                    try {
+                        store.selectVersion(versions.get(index));
+                        replyStatus = null;
+                        renderMessages(false);
+                        dialog.dismiss();
+                    } catch (IllegalStateException error) { notice("无法保存版本选择"); }
+                }).setNegativeButton("取消", null).create(), true);
+            });
+            actions.addView(count);
+        }
+        transcript.addView(actions);
+    }
+
+    private static String preview(String value, int length) {
+        String flat = value.replace('\n', ' ').strip();
+        return flat.codePointCount(0, flat.length()) <= length ? flat : flat.substring(0, flat.offsetByCodePoints(0, length)) + "…";
+    }
+
+    private void editPrompt(int id) {
+        if (sending) { notice("请先停止当前生成"); return; }
+        ChatHistory history = store.active.history;
+        LinearLayout body = dialogBody();
+        EditText edit = multilineField(body, "提问", history.turn(id).prompt(), 4000);
+        ScrollView scroll = scroll();
+        scroll.addView(body);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("编辑提问").setView(scroll)
+                .setNegativeButton("取消", null).setPositiveButton("发送", null).create();
+        showDialog(dialog, true);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String value = edit.getText().toString().strip();
+            if (value.isEmpty()) { edit.setError("请输入提问"); return; }
+            submit(value, history.parent(id), false, dialog::dismiss);
+        });
+    }
+
     private void send() {
         String message = draft.strip();
         if (message.isBlank() || sending) return;
+        submit(message, store.active == null ? -1 : store.active.history.leaf(), true);
+    }
+
+    private boolean autoRoute() { return prefs.getBoolean("auto_route", false); }
+
+    private void submit(String message, int parent, boolean fromComposer) {
+        submit(message, parent, fromComposer, () -> {});
+    }
+
+    private void submit(String message, int parent, boolean fromComposer, Runnable accepted) {
+        if (sending) return;
         Providers.Choice choice = providers.choice();
         if (choice == null) {
+            if (message.equalsIgnoreCase("Markdown")) {
+                accepted.run();
+                startReply(message, "Serein", parent, fromComposer, "等待 Serein 回复…", stream -> {
+                    for (String part : new String[]{"# 阅读示例\n\n", "**重点**、*斜体*和~~删除线~~\n\n",
+                            "> 这是一段引用。\n\n", "1. 列表项\n2. 行内代码 `val`\n\n",
+                            "```kotlin\nval ready = true\n```\n\n", "| 格式 | 示例 |\n| --- | --- |\n| 链接 | [CommonMark](https://commonmark.org/) |"}) {
+                        stream.cancellation.check();
+                        stream.append(part);
+                        Thread.sleep(350);
+                    }
+                });
+                return;
+            }
             try {
-                store.append(message, ChatStore.demoReply(message), "Serein");
-                input.setText("");
+                store.append(parent, message, ChatStore.demoReply(message), "Serein", null);
+                accepted.run();
+                if (fromComposer) input.setText("");
                 replyStatus = null;
                 renderMessages();
             } catch (IllegalStateException error) { notice("无法保存本机聊天记录"); }
             return;
         }
-        String consent = "consent_" + choice.provider().id + "_" + choice.provider().base;
+        ChatStore.Chat chat = store.active;
+        List<Integer> path = chat == null ? List.of() : chat.history.path(parent);
+        List<ChatHistory.Turn> history = new ArrayList<>(path.size());
+        for (int id : path) history.add(chat.history.turn(id));
+        String account = profile.systemPrompt();
+        boolean compact = prefs.getBoolean("auto_compact", false);
+        Providers.Choice target = routeChoice(choice, message, history, account, compact);
+        String providerScope = target.provider().id + "_" + target.provider().base;
+        String consent = account.isEmpty() && !compact ? "consent_" + providerScope
+                : "consent_extensions_" + !account.isEmpty() + "_" + compact + "_" + providerScope;
+        Runnable send = () -> {
+            accepted.run();
+            sendOnline(target, message, parent, fromComposer, path, history,
+                    chat == null ? null : chat.checkpoint, account, compact);
+        };
         if (!prefs.getBoolean(consent, false)) {
-            new AlertDialog.Builder(this).setTitle("发送给 " + choice.provider().label)
-                    .setMessage(choice.provider().base + "\n\n发送时会把当前会话的消息发给此服务商。")
+            new AlertDialog.Builder(this).setTitle("发送给 " + target.provider().label)
+                    .setMessage(target.provider().base + "\n\n将发送当前版本的聊天内容。"
+                            + (account.isEmpty() ? "" : "已开启账户资料分享，名称和简介也会发送。")
+                            + (compact ? "长对话可能先发送旧消息生成摘要，产生额外请求和费用。" : ""))
                     .setNegativeButton("取消", null).setPositiveButton("发送", (dialog, item) -> {
                         prefs.edit().putBoolean(consent, true).apply();
-                        sendOnline(choice, message);
+                        send.run();
                     }).show();
-        } else sendOnline(choice, message);
+        } else send.run();
     }
 
-    private void sendOnline(Providers.Choice choice, String message) {
-        List<ChatStore.Turn> context = store.active == null ? List.of() : List.copyOf(store.active.turns);
+    private Providers.Choice routeChoice(Providers.Choice manual, String message, List<ChatHistory.Turn> history,
+                                         String account, boolean compact) {
+        if (!autoRoute()) return manual;
+        List<ChatContext.ModelSpec> candidates = new ArrayList<>();
+        for (Providers.Model model : manual.provider().models) {
+            ModelCatalog.Entry entry = modelCatalog.find(model.id());
+            if (entry != null && !entry.routeDisabled()) {
+                candidates.add(new ChatContext.ModelSpec(model.id(), entry.inputLimit(), entry.tier(), entry.price()));
+            }
+        }
+        ChatContext.ModelSpec selected = ChatContext.route(candidates, message, ChatContext.estimate(history, account, message),
+                ChatContext.estimate(ChatContext.recent(history), account, message), compact);
+        if (selected != null) for (Providers.Model model : manual.provider().models) {
+            if (model.id().equals(selected.id())) return new Providers.Choice(manual.provider(), model);
+        }
+        return manual;
+    }
+
+    private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
+                            List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
+                            String account, boolean compact) {
         int level = effort(choice);
+        ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
+        int inputLimit = entry == null ? 0 : entry.inputLimit();
+        boolean preparing = compact && ChatContext.estimate(history, account, message) > ChatContext.threshold(inputLimit);
+        String model = choice.model().title();
+        String scope = choice.provider().id + "\n" + choice.provider().base + "\n" + choice.model().id();
+        startReply(message, model, parent, fromComposer, preparing ? "正在压缩较早的对话…" : "等待 " + model + " 回复…", stream -> {
+            ChatContext.Context context = new ChatContext.Context(history, "", null);
+            if (preparing) {
+                try {
+                    context = ChatContext.prepare(history, path, account, message, inputLimit, scope, checkpoint,
+                            (previous, chunk) -> ModelApi.summarize(choice, previous, chunk, stream.cancellation));
+                } catch (Exception error) {
+                    stream.cancellation.check();
+                    if (inputLimit == 0 || ChatContext.estimate(history, account, message) > ChatContext.budget(inputLimit)) throw error;
+                    ui.post(() -> { if (streamReply == stream) notice("摘要生成失败，本轮使用完整历史"); });
+                }
+                ui.post(() -> {
+                    if (streamReply != stream) return;
+                    replyStatus = "等待 " + model + " 回复…";
+                    if (liveStatus != null) liveStatus.setText(replyStatus);
+                });
+            }
+            stream.cancellation.check();
+            stream.checkpoint = context.checkpoint();
+            ModelApi.chat(choice, context.recent(), message, level, account, context.summary(), stream.cancellation, stream::append);
+        });
+    }
+
+    private interface ReplySource {
+        void read(StreamReply stream) throws Exception;
+    }
+
+    private final class StreamReply {
+        private static final long MIN_REFRESH_MS = 40;
+        private static final long MAX_REFRESH_MS = 350;
+        final String model;
+        final int parent;
+        final boolean fromComposer;
+        final ModelApi.Cancellation cancellation = new ModelApi.Cancellation();
+        final StringBuilder content = new StringBuilder();
+        final Runnable refresh = this::renderLatest;
+        boolean queued;
+        boolean sealed;
+        boolean presented;
+        long nextRefresh;
+        volatile ChatContext.Checkpoint checkpoint;
+
+        StreamReply(String model, int parent, boolean fromComposer) {
+            this.model = model;
+            this.parent = parent;
+            this.fromComposer = fromComposer;
+        }
+
+        synchronized String snapshot() { return content.toString(); }
+
+        synchronized void append(String delta) {
+            if (sealed) return;
+            content.append(delta);
+            if (queued) return;
+            queued = true;
+            ui.postAtTime(refresh, Math.max(nextRefresh, SystemClock.uptimeMillis() + MIN_REFRESH_MS));
+        }
+
+        private void renderLatest() {
+            String latest = snapshot();
+            long started = SystemClock.uptimeMillis();
+            showStream(this, latest, true);
+            long elapsed = SystemClock.uptimeMillis() - started;
+            synchronized (this) {
+                nextRefresh = SystemClock.uptimeMillis() + Math.max(MIN_REFRESH_MS, Math.min(MAX_REFRESH_MS, elapsed * 2));
+                queued = !sealed && content.length() != latest.length();
+                if (queued) ui.postAtTime(refresh, nextRefresh);
+            }
+        }
+
+        synchronized void seal() {
+            sealed = true;
+            ui.removeCallbacks(refresh);
+        }
+    }
+
+    private void startReply(String message, String model, int parent, boolean fromComposer, String status, ReplySource source) {
+        StreamReply stream = new StreamReply(model, parent, fromComposer);
+        streamReply = stream;
         sending = true;
         pendingPrompt = message;
-        replyStatus = "等待 " + choice.model().id() + " 回复…";
-        input.setText("");
-        input.setEnabled(false);
+        replyStatus = status;
+        if (fromComposer) draft = "";
+        if (input != null) {
+            hideKeyboard();
+            if (fromComposer) input.setText("");
+            input.setEnabled(false);
+            updateSend(sendButton);
+        }
         renderMessages();
         worker.execute(() -> {
-            String response = null;
             String failure = null;
-            try { response = ModelApi.chat(choice, context, message, level); }
+            try { source.read(stream); }
             catch (Exception error) { failure = networkMessage(error); }
-            String reply = response;
             String problem = failure;
-            runOnUiThread(() -> {
-                if (isDestroyed() || isFinishing()) return;
-                sending = false;
-                pendingPrompt = null;
-                replyStatus = problem;
-                if (reply != null) {
-                    try { store.append(message, reply, choice.model().id()); }
-                    catch (IllegalStateException error) { replyStatus = "收到回复，但无法保存本机聊天记录。"; }
-                }
-                if (replyStatus != null) draft = message;
-                if (input != null) {
-                    input.setEnabled(true);
-                    input.setText(draft);
-                    input.setSelection(input.length());
-                    updateSend(sendButton);
-                    renderMessages();
-                }
-            });
+            ui.post(() -> finishReply(stream, problem));
         });
+    }
+
+    private void stopReply() {
+        StreamReply stream = streamReply;
+        if (stream == null) return;
+        cancelStream(stream);
+        finishReply(stream, "已停止生成");
+    }
+
+    private void cancelStream(StreamReply stream) {
+        stream.seal();
+        Runnable disconnect = stream.cancellation.cancel();
+        new Thread(disconnect, "serein-disconnect").start();
+    }
+
+    private void finishReply(StreamReply stream, String problem) {
+        if (streamReply != stream || isDestroyed() || isFinishing()) return;
+        stream.seal();
+        String message = pendingPrompt;
+        String reply = stream.snapshot();
+        showStream(stream, reply, problem == null);
+        streamReply = null;
+        sending = false;
+        pendingPrompt = null;
+        replyStatus = problem;
+        boolean saved = false;
+        if (reply.isBlank()) {
+            if (replyStatus == null) replyStatus = "模型没有返回可显示的文本。";
+            if (stream.fromComposer) draft = message;
+        } else {
+            try {
+                store.append(stream.parent, message, reply, stream.model, stream.checkpoint);
+                saved = true;
+            }
+            catch (IllegalStateException error) {
+                if (stream.fromComposer) draft = message;
+                replyStatus = "收到回复，但无法保存本机聊天记录。";
+            }
+        }
+        if (input != null) {
+            input.setEnabled(true);
+            input.setText(draft);
+            input.setSelection(input.length());
+            updateSend(sendButton);
+            ReplyText current = liveReply;
+            if (current != null && saved) {
+                current.setTextIsSelectable(true);
+                current.setMovementMethod(LinkMovementMethod.getInstance());
+                liveStatus.setText(replyStatus);
+                liveStatus.setVisibility(replyStatus == null ? View.GONE : View.VISIBLE);
+                messageActions(liveActions, store.active.history.leaf());
+            } else renderMessages(chatScroll.following);
+        }
     }
 
     private void newChat() {
@@ -533,7 +905,7 @@ public final class MainActivity extends Activity {
         historyScroll.addView(history);
         rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         rule(rail);
-        String name = prefs.getString("profile_name", "本机账户");
+        String name = profile.displayName();
         addRow(rail, name, "账户", R.drawable.ic_user, () -> go(ACCOUNT));
         addRow(rail, "设置", "", R.drawable.ic_settings, () -> go(SETTINGS));
         screen.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
@@ -562,7 +934,7 @@ public final class MainActivity extends Activity {
         top.addView(time);
         item.addView(top);
         LinearLayout bottom = row();
-        String last = chat.turns.get(chat.turns.size() - 1).prompt().replace('\n', ' ');
+        String last = chat.history.turn(chat.history.leaf()).prompt().replace('\n', ' ');
         TextView preview = text(last, 13, muted, false);
         preview.setMaxLines(1);
         preview.setEllipsize(TextUtils.TruncateAt.END);
@@ -652,21 +1024,23 @@ public final class MainActivity extends Activity {
             case "appearance" -> appearance(body);
             case "providers" -> providerList(body);
             case "provider" -> providerDetails(body, providers.get(providerPage));
-            case "plugins" -> body.addView(text("自定义插件尚未开放。", 16, ink, false));
+            case "plugins" -> chatExtensions(body);
             case "about" -> {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.3 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.5 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话历史和服务商配置保存在本机，由 Android Keystore 管理的密钥加密。使用在线模型发送消息时，当前会话内容会通过 HTTPS 发给你选定的服务商。", 16, ink, false));
+            case "policy" -> body.addView(text("会话历史、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。在线聊天内容会通过 HTTPS 发给当前服务商。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
                 license(body, "Tabler Icons · MIT 许可", "tabler-icons");
                 license(body, "LiteLLM 模型目录 · MIT 许可", "litellm");
+                license(body, "commonmark-java · BSD 2-Clause 许可", "commonmark");
+                license(body, "AstraAgent · MIT 许可", "astraagent");
             }
         }
     }
@@ -801,6 +1175,7 @@ public final class MainActivity extends Activity {
     private void changeChoice(Dialog dialog, Providers.Provider provider, Providers.Model model) {
         try {
             providers.select(provider, model);
+            prefs.edit().putBoolean("auto_route", false).apply();
             dialog.dismiss();
             render();
         } catch (IllegalStateException error) { notice("无法保存模型选择"); }
@@ -1149,6 +1524,19 @@ public final class MainActivity extends Activity {
         return edit;
     }
 
+    private EditText multilineField(LinearLayout body, String label, String value, int limit) {
+        EditText edit = field(body, label, value, false);
+        edit.setSingleLine(false);
+        edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        edit.setGravity(Gravity.TOP | Gravity.START);
+        edit.setMinLines(3);
+        edit.setMaxLines(8);
+        edit.setFilters(new InputFilter[]{new InputFilter.LengthFilter(limit)});
+        edit.setSaveEnabled(false);
+        edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        return edit;
+    }
+
     private void saveForm(String title, LinearLayout form, boolean secure, Runnable save, Runnable remove) {
         ScrollView scroll = scroll();
         scroll.addView(form);
@@ -1195,7 +1583,11 @@ public final class MainActivity extends Activity {
         EditText name = new EditText(this);
         name.setId(View.generateViewId());
         label.setLabelFor(name.getId());
-        name.setText(prefs.getString("profile_name", "本机账户"));
+        name.setText(profile.name());
+        name.setHint("本机账户");
+        name.setSaveEnabled(false);
+        name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        name.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         name.setTextColor(ink);
         name.setTextSize(16);
         name.setSingleLine(true);
@@ -1205,13 +1597,45 @@ public final class MainActivity extends Activity {
         name.setFilters(new InputFilter[] {new InputFilter.LengthFilter(32)});
         body.addView(name);
         space(body, 14);
+        TextView bioLabel = text("个人简介", 14, muted, true);
+        body.addView(bioLabel);
+        EditText bio = multilineField(body, "个人简介", profile.bio(), 1000);
+        bio.setId(View.generateViewId());
+        bioLabel.setLabelFor(bio.getId());
+        Switch share = settingSwitch(body, "随聊天发送账户资料", profile.share());
+        body.addView(text("开启后，名称和简介作为系统提示词发送给在线服务商。", 13, muted, false));
+        space(body, 14);
         View save = action("保存", R.drawable.ic_check, 0, onAccent, accent);
         save.setOnClickListener(v -> {
-            String displayName = name.getText().toString().strip();
-            prefs.edit().putString("profile_name", displayName.isBlank() ? "本机账户" : displayName).apply();
-            navigateBack();
+            AccountProfile next = new AccountProfile(name.getText().toString().strip(), bio.getText().toString().strip(), share.isChecked());
+            try {
+                vault.write("profile", next.encode(), "profile_name");
+                profile = next;
+                navigateBack();
+            } catch (IllegalStateException error) { notice("无法保存账户资料"); }
         });
         body.addView(save, new LinearLayout.LayoutParams(WRAP, WRAP));
+    }
+
+    private Switch settingSwitch(LinearLayout body, String label, boolean checked) {
+        Switch toggle = new Switch(this);
+        toggle.setText(label);
+        toggle.setTextColor(ink);
+        toggle.setTextSize(16);
+        toggle.setMinHeight(dp(48));
+        toggle.setChecked(checked);
+        body.addView(toggle, new LinearLayout.LayoutParams(MATCH, WRAP));
+        return toggle;
+    }
+
+    private void chatExtensions(LinearLayout body) {
+        Switch compact = settingSwitch(body, "自动压缩上下文", prefs.getBoolean("auto_compact", false));
+        body.addView(text("长对话可能向当前服务商发出额外的摘要请求。", 13, muted, false));
+        compact.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_compact", checked).apply());
+        space(body, 10);
+        Switch route = settingSwitch(body, "自动模型路由", autoRoute());
+        body.addView(text("路由范围：当前服务商的已配置聊天模型。", 13, muted, false));
+        route.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_route", checked).apply());
     }
 
     private void appearance(LinearLayout body) {

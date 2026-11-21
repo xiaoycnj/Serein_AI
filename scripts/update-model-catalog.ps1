@@ -1,10 +1,19 @@
-param([Parameter(Mandatory)][string]$Source)
+param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$AstraRegistry)
 
 $ErrorActionPreference = 'Stop'
 $revision = 'ac7674625ceed298d6c411cc964f23aded63989d'
 $sha256 = 'F410A08E6D566829E3A858B00E8B23F5A796FD2360F056A69CAB43526F908864'
 if ((Get-FileHash -LiteralPath $Source).Hash -ne $sha256) { throw 'Unexpected LiteLLM snapshot.' }
 $sourceData = Get-Content -LiteralPath $Source -Raw | ConvertFrom-Json -AsHashtable
+$astraHash = 'BB032B14F584881479748BD19CBF89992138D723E411133F0B645A7155F3FA19'
+if ((Get-FileHash -LiteralPath $AstraRegistry).Hash -ne $astraHash) { throw 'Unexpected AstraAgent registry snapshot.' }
+$astra = Get-Content -LiteralPath $AstraRegistry -Raw | ConvertFrom-Json -AsHashtable
+$astraModels = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+foreach ($provider in $astra.providers) {
+    foreach ($model in $provider.models) {
+        if ($model.kind -eq 'chat') { $astraModels.TryAdd($model.id, $model) | Out-Null }
+    }
+}
 
 # Classify verified IDs from the source snapshot. Runtime lookups use full, literal keys.
 $families = @(
@@ -55,6 +64,14 @@ foreach ($entry in $sourceData.GetEnumerator()) {
             $idList += "$namespace/$leaf", "openrouter/$namespace/$leaf"
         }
         $record = [ordered]@{label = $names[$leaf] ?? $leaf; publisher = $family[1]; icon = $family[2]}
+        $spec = $astraModels[$leaf]
+        if ($meta['max_input_tokens'] -gt 0) { $record['inputLimit'] = [int]$meta['max_input_tokens'] }
+        elseif ($spec.context_window -gt 0) { $record['inputLimit'] = [int]$spec.context_window }
+        if ($spec.tier -in @('standard', 'advanced', 'flagship')) { $record['tier'] = $spec.tier }
+        if ($spec -and $spec.enabled -eq $false) { $record['routeDisabled'] = $true }
+        if ($meta.Contains('input_cost_per_token') -and $meta.Contains('output_cost_per_token')) {
+            $record['price'] = ([double]$meta['input_cost_per_token'] + [double]$meta['output_cost_per_token']) * 1000000
+        }
         foreach ($id in $idList) { $entries[$id] = $record }
         break
     }
@@ -73,6 +90,6 @@ foreach ($alias in $aliases.Keys) {
     $entries[$alias] = $entries[$target]
 }
 $asset = Join-Path (Split-Path -Parent $PSScriptRoot) 'app/src/main/assets/model-catalog.json'
-$data = [ordered]@{schema = 1; revision = $revision; models = $entries}
+$data = [ordered]@{schema = 1; revision = $revision; astraRevision = '1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f'; models = $entries}
 $data | ConvertTo-Json -Depth 6 -Compress | Set-Content -LiteralPath $asset -Encoding utf8NoBOM
 Write-Output "$($entries.Count) exact model IDs written to $asset"

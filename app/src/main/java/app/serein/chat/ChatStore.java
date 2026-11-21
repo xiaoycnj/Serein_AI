@@ -10,18 +10,18 @@ import java.util.List;
 import java.util.UUID;
 
 final class ChatStore {
-    record Turn(String prompt, String reply, String model) {}
-
     static final class Chat {
         final String id;
         final String title;
-        final List<Turn> turns = new ArrayList<>();
+        final ChatHistory history;
         long updatedAt;
+        ChatContext.Checkpoint checkpoint;
 
-        Chat(String id, String title, long updatedAt) {
+        Chat(String id, String title, long updatedAt, ChatHistory history) {
             this.id = id;
             this.title = title;
             this.updatedAt = updatedAt;
+            this.history = history;
         }
     }
 
@@ -39,18 +39,17 @@ final class ChatStore {
             JSONArray saved = data.getJSONArray("history");
             for (int i = 0; i < saved.length(); i++) {
                 JSONObject entry = saved.getJSONObject(i);
-                Chat chat = new Chat(entry.getString("id"), entry.getString("title"), entry.getLong("updated"));
-                JSONArray turns = entry.getJSONArray("turns");
-                for (int j = 0; j < turns.length(); j++) {
-                    JSONObject turn = turns.getJSONObject(j);
-                    chat.turns.add(new Turn(turn.getString("prompt"), turn.getString("reply"), turn.optString("model", "Serein")));
-                }
-                if (!chat.turns.isEmpty()) recent.add(chat);
+                ChatHistory history = ChatHistory.read(entry.getJSONArray("turns"), entry.optInt("leaf", -1));
+                Chat chat = new Chat(entry.getString("id"), entry.getString("title"), entry.getLong("updated"), history);
+                JSONObject checkpoint = entry.optJSONObject("checkpoint");
+                if (checkpoint != null) chat.checkpoint = new ChatContext.Checkpoint(checkpoint.getString("scope"),
+                        checkpoint.getInt("through"), checkpoint.getString("text"));
+                if (history.leaf() >= 0) recent.add(chat);
             }
             String last = data.optString("active");
             for (Chat chat : recent) if (chat.id.equals(last)) active = chat;
             if (encrypted == null && (prefs.contains("history") || prefs.contains("active_chat"))) save();
-        } catch (JSONException error) {
+        } catch (JSONException | IllegalArgumentException error) {
             throw new IllegalStateException("无法读取本机历史", error);
         }
     }
@@ -62,24 +61,35 @@ final class ChatStore {
         catch (RuntimeException error) { active = previous; throw error; }
     }
 
-    void append(String prompt, String reply, String model) {
+    void selectVersion(int id) {
+        int previous = active.history.leaf();
+        active.history.select(active.history.latestDescendant(id));
+        try { save(); }
+        catch (RuntimeException error) { active.history.select(previous); throw error; }
+    }
+
+    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint) {
         Chat previous = active;
         if (active == null) {
             String firstLine = prompt.split("\\R", 2)[0];
             int length = firstLine.codePointCount(0, firstLine.length());
             String title = length <= 24 ? firstLine : firstLine.substring(0, firstLine.offsetByCodePoints(0, 24)) + "…";
-            active = new Chat(UUID.randomUUID().toString(), title, 0);
+            active = new Chat(UUID.randomUUID().toString(), title, 0, new ChatHistory());
         }
         long oldTime = active.updatedAt;
         int oldPosition = recent.indexOf(active);
-        active.turns.add(new Turn(prompt, reply, model));
+        int oldLeaf = active.history.leaf();
+        ChatContext.Checkpoint oldCheckpoint = active.checkpoint;
+        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model));
+        if (checkpoint != null) active.checkpoint = checkpoint;
         active.updatedAt = System.currentTimeMillis();
         recent.remove(active);
         recent.add(0, active);
         try { save(); }
         catch (RuntimeException error) {
             recent.remove(active);
-            active.turns.remove(active.turns.size() - 1);
+            active.history.rollbackAppend(oldLeaf);
+            active.checkpoint = oldCheckpoint;
             active.updatedAt = oldTime;
             if (oldPosition >= 0) recent.add(oldPosition, active);
             active = previous;
@@ -91,12 +101,11 @@ final class ChatStore {
         JSONArray saved = new JSONArray();
         try {
             for (Chat chat : recent) {
-                JSONArray turns = new JSONArray();
-                for (Turn turn : chat.turns) {
-                    turns.put(new JSONObject().put("prompt", turn.prompt()).put("reply", turn.reply()).put("model", turn.model()));
-                }
-                saved.put(new JSONObject().put("id", chat.id).put("title", chat.title)
-                        .put("updated", chat.updatedAt).put("turns", turns));
+                JSONObject row = new JSONObject().put("id", chat.id).put("title", chat.title)
+                        .put("updated", chat.updatedAt).put("turns", chat.history.write()).put("leaf", chat.history.leaf());
+                if (chat.checkpoint != null) row.put("checkpoint", new JSONObject().put("scope", chat.checkpoint.scope())
+                        .put("through", chat.checkpoint.through()).put("text", chat.checkpoint.text()));
+                saved.put(row);
             }
             String json = new JSONObject().put("history", saved).put("active", active == null ? "" : active.id).toString();
             vault.write("chat", json, "history", "active_chat");

@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Set;
 
 final class ModelCatalog {
-    record Entry(String label, String publisher, String icon) {}
+    record Entry(String label, String publisher, String icon, int inputLimit, int tier, double price, boolean routeDisabled) {}
 
     private static final Set<String> OPENAI_EFFORT = Set.of(
             "gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-mini-2025-08-07",
@@ -34,7 +34,9 @@ final class ModelCatalog {
             while (keys.hasNext()) {
                 String id = keys.next();
                 JSONObject row = models.getJSONObject(id);
-                entries.put(id, new Entry(row.getString("label"), row.getString("publisher"), row.getString("icon")));
+                int tier = switch (row.optString("tier")) { case "standard" -> 0; case "flagship" -> 2; default -> 1; };
+                entries.put(id, new Entry(row.getString("label"), row.getString("publisher"), row.getString("icon"),
+                        row.optInt("inputLimit"), tier, row.optDouble("price", Double.POSITIVE_INFINITY), row.optBoolean("routeDisabled")));
             }
             return new ModelCatalog(Map.copyOf(entries));
         } catch (IOException | JSONException error) {
