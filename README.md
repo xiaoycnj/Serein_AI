@@ -32,16 +32,19 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | --- | --- | --- | --- |
 | Alpha 0.0.6 | 完成核心对话与本地会话管理 | 支持流式回答、停止、Markdown、消息编辑/重试分支；会话置顶/取消置顶、重命名、删除在重启后保持正确 | 不加入云同步 |
 | Alpha 0.0.7 | 统一常用控件，验证聊天内交互卡片 | 聊天和设置共用 Material 控件；可离线体验清单；在线卡片可关闭，卡片状态留在本机 | 不加入确认执行、文件或工具编排 |
+| Alpha 0.0.8 | 改善中断后的聊天恢复 | 停止和未完成状态随回复版本保存；未收到正文时可手动重试；可复制回复 | 不自动重发，也不覆盖用户的新草稿 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史查找与数据可控性 | 先收集本机聊天数量、找回旧会话的实际需求；如搜索进入排期，需覆盖标题与消息内容且只在本机查询；数据导出需能验证格式并明确敏感信息处理 | 搜索、导出和更细的保留控制暂不承诺版本 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.7
+## Alpha 0.0.8
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 每轮消息下方可编辑提问、重新生成回复。两种操作都会创建版本，原回答与后续对话可以通过版本按钮切回。
+- 手动停止或在线回复未完成时，已经收到的正文连同状态保存在当前回复版本；重新打开会话仍可看到标记。完全没收到回复时，可在当前对话点「重试」，不会覆盖后来输入的草稿。
+- 「复制回复」将 Markdown 原文与卡片公开文字复制到系统剪贴板，不包含勾选状态。复制确认不显示内容预览；复制后的文字仍可由用户粘贴到其他应用。
 - 在侧栏的会话选项里置顶、重命名或删除会话。置顶状态加密保存在本机，新消息不会让置顶会话移出顶部；重命名保留消息和版本。确认删除后，本机记录及其全部版本会被移除。
 - 在「账户」保存显示名称和简介。资料在本机加密保存，开启「随聊天发送账户资料」后才会放入在线请求的系统提示词。
 - 「设置 → 自定义插件」的聊天扩展默认关闭。自动压缩保留最近四轮和当前提问，将较早的历史分段发给本轮服务商生成摘要，可能产生额外费用。原文仍保存在本机。自动路由在当前服务商已配置的模型中，按提问类型、上下文容量和目录价格选择。实际模型显示在回复旁，手动选模型可退出自动路由。
@@ -58,14 +61,14 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.7.apk
+adb install -r .\outputs\Serein-Alpha-0.0.8.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
 
 发行打包使用 `./scripts/build-alpha.ps1 -RunChatTests -Release`，输出到 `outputs/release/`。构建需要仓库外的签名库（别名 `serein-release`）；通过 `SEREIN_RELEASE_KEYSTORE` 和 `SEREIN_RELEASE_STORE_PASS` 提供路径和密码。
 
-在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。
+在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。可在正文出现后点停止，重开会话确认部分回复和停止标记仍在。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。
 
 流式处理对照了 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion) 和 [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)。帧刷新和渐入参考了 [AstraAgent 的会话渲染](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/js/conversation.js) 与 [动效样式](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/css/ui/chat-motion.css)。消息版本和滚动跟随参考了 [DeepSeek Chat Demo](https://github.com/deepseek-ai/chat-demo/tree/8ad7b56e196b87d8a3215dc09476d6d146ad3f0e)，分段摘要和本地模型路由参考了 [AstraAgent](https://github.com/xiaoycnj/AstraAgent/tree/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f)。
 

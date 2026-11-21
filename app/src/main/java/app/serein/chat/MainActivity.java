@@ -3,6 +3,9 @@ package app.serein.chat;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
@@ -21,6 +24,7 @@ import android.graphics.drawable.RippleDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.text.Editable;
@@ -109,6 +113,7 @@ public final class MainActivity extends Activity {
     private boolean sending;
     private String pendingPrompt;
     private String replyStatus;
+    private ReplyRetry retryReply;
     private StreamReply streamReply;
     private ReplyText liveReply;
     private TextView liveStatus;
@@ -440,6 +445,12 @@ public final class MainActivity extends Activity {
                 reply.update(markdown(turn.reply()), false, dp(4));
                 if (turn.reply().isBlank()) reply.setVisibility(View.GONE);
                 if (turn.card() != null) addCard(transcript, store.active, id);
+                String status = replyStateLabel(turn.replyState());
+                if (status != null) {
+                    TextView marker = text(status, 13, muted, false);
+                    marker.setPadding(dp(8), dp(4), dp(8), 0);
+                    transcript.addView(marker);
+                }
                 messageActions(transcript, id);
                 space(transcript, 8);
             }
@@ -460,6 +471,15 @@ public final class MainActivity extends Activity {
         if (pendingPrompt != null) {
             liveActions = column();
             transcript.addView(liveActions);
+        } else if (retryReply != null && retryReply.matches(store.active)) {
+            ReplyRetry attempt = retryReply;
+            View retry = action("重试", R.drawable.ic_refresh, 0, ink, tint);
+            retry.setOnClickListener(v -> {
+                if (!sending && retryReply == attempt && attempt.matches(store.active)) {
+                    submit(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft));
+                }
+            });
+            transcript.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
         }
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
         if (streamReply != null) showStream(streamReply, streamReply.snapshot(), true);
@@ -586,21 +606,23 @@ public final class MainActivity extends Activity {
     private void messageActions(LinearLayout transcript, int id) {
         LinearLayout actions = row();
         actions.setGravity(Gravity.CENTER_VERTICAL);
+        ChatHistory history = store.active.history;
+        ChatHistory.Turn turn = history.turn(id);
+        if (!turn.reply().isBlank() || turn.card() != null) {
+            actions.addView(iconButton("复制回复", R.drawable.ic_copy, muted, 0,
+                    () -> copyReply(turn.assistantText())));
+        }
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
         actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
             if (sending) { notice("请先停止当前生成"); return; }
-            ChatHistory history = store.active.history;
-            submit(history.turn(id).prompt(), history.parent(id), false);
+            submit(turn.prompt(), history.parent(id), false);
         }));
-        ChatHistory history = store.active.history;
         List<Integer> versions = history.variants(id);
         if (versions.size() > 1) {
             int current = versions.indexOf(id);
-            TextView count = text((current + 1) + " / " + versions.size(), 13, muted, true);
-            count.setGravity(Gravity.CENTER);
-            count.setMinHeight(dp(48));
-            count.setMinWidth(dp(60));
-            count.setBackground(ripple(0, 8));
+            MaterialButton count = action((current + 1) + " / " + versions.size(), 0, 0, muted, 0);
+            count.setMinWidth(0);
+            count.setMinimumWidth(0);
             count.setContentDescription("切换版本，当前第 " + (current + 1) + " 个，共 " + versions.size() + " 个");
             count.setOnClickListener(v -> {
                 if (sending) { notice("请先停止当前生成"); return; }
@@ -612,7 +634,7 @@ public final class MainActivity extends Activity {
                 showDialog(dialogBuilder().setTitle("对话版本").setSingleChoiceItems(labels, current, (dialog, index) -> {
                     try {
                         store.selectVersion(versions.get(index));
-                        replyStatus = null;
+                        clearReplyNotice();
                         renderMessages(false);
                         dialog.dismiss();
                     } catch (IllegalStateException error) { notice("无法保存版本选择"); }
@@ -621,6 +643,17 @@ public final class MainActivity extends Activity {
             actions.addView(count);
         }
         transcript.addView(actions);
+    }
+
+    private void copyReply(String source) {
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        ClipData clip = ClipData.newPlainText("Serein", source);
+        PersistableBundle extras = new PersistableBundle();
+        extras.putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true);
+        clip.getDescription().setExtras(extras);
+        if (clipboard == null) { notice("剪贴板不可用"); return; }
+        try { clipboard.setPrimaryClip(clip); }
+        catch (RuntimeException error) { notice("无法复制整条回复，请长按选中部分内容"); }
     }
 
     private static String preview(String value, int length) {
@@ -688,7 +721,7 @@ public final class MainActivity extends Activity {
                 store.append(parent, message, ChatStore.demoReply(message), "Serein", null);
                 accepted.run();
                 if (fromComposer) input.setText("");
-                replyStatus = null;
+                clearReplyNotice();
                 renderMessages();
             } catch (IllegalStateException error) { notice("无法保存本机聊天记录"); }
             return;
@@ -834,6 +867,7 @@ public final class MainActivity extends Activity {
         streamReply = stream;
         sending = true;
         pendingPrompt = message;
+        retryReply = null;
         replyStatus = status;
         if (fromComposer) draft = "";
         if (input != null) {
@@ -848,7 +882,8 @@ public final class MainActivity extends Activity {
             try { source.read(stream); }
             catch (Exception error) { failure = networkMessage(error); }
             String problem = failure;
-            ui.post(() -> finishReply(stream, problem));
+            ui.post(() -> finishReply(stream, problem == null ? ChatHistory.ReplyState.COMPLETE
+                    : ChatHistory.ReplyState.INTERRUPTED, problem));
         });
     }
 
@@ -856,7 +891,7 @@ public final class MainActivity extends Activity {
         StreamReply stream = streamReply;
         if (stream == null) return;
         cancelStream(stream);
-        finishReply(stream, "已停止生成");
+        finishReply(stream, ChatHistory.ReplyState.STOPPED, "已停止生成");
     }
 
     private void cancelStream(StreamReply stream) {
@@ -865,13 +900,26 @@ public final class MainActivity extends Activity {
         new Thread(disconnect, "serein-disconnect").start();
     }
 
-    private void finishReply(StreamReply stream, String problem) {
+    private static String replyStateLabel(ChatHistory.ReplyState state) {
+        return switch (state) {
+            case COMPLETE -> null;
+            case STOPPED -> "已停止 · 已保留部分回复";
+            case INTERRUPTED -> "回复未完成 · 已保留部分回复";
+        };
+    }
+
+    private void clearReplyNotice() {
+        retryReply = null;
+        replyStatus = null;
+    }
+
+    private void finishReply(StreamReply stream, ChatHistory.ReplyState outcome, String problem) {
         if (streamReply != stream || isDestroyed() || isFinishing()) return;
         stream.seal();
         String message = pendingPrompt;
         String reply = stream.snapshot();
-        ChatCard card = problem == null ? stream.card : null;
-        showStream(stream, reply, problem == null);
+        ChatCard card = outcome == ChatHistory.ReplyState.COMPLETE ? stream.card : null;
+        showStream(stream, reply, outcome == ChatHistory.ReplyState.COMPLETE);
         streamReply = null;
         sending = false;
         pendingPrompt = null;
@@ -880,10 +928,12 @@ public final class MainActivity extends Activity {
         if (reply.isBlank() && card == null) {
             if (replyStatus == null) replyStatus = "模型没有返回可显示的文本。";
             if (stream.fromComposer) draft = message;
+            retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer);
         } else {
             try {
-                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card);
+                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome);
                 saved = true;
+                clearReplyNotice();
             }
             catch (IllegalStateException error) {
                 if (stream.fromComposer) draft = message;
@@ -899,8 +949,10 @@ public final class MainActivity extends Activity {
             if (current != null && saved) {
                 current.setTextIsSelectable(true);
                 current.setMovementMethod(LinkMovementMethod.getInstance());
-                liveStatus.setText(replyStatus);
-                liveStatus.setVisibility(replyStatus == null ? View.GONE : View.VISIBLE);
+                String status = replyStateLabel(outcome);
+                if (outcome == ChatHistory.ReplyState.INTERRUPTED && problem != null) status += "\n" + problem;
+                liveStatus.setText(status);
+                liveStatus.setVisibility(status == null ? View.GONE : View.VISIBLE);
                 if (card != null) addCard(liveActions, store.active, store.active.history.leaf());
                 messageActions(liveActions, store.active.history.leaf());
             } else renderMessages(chatScroll.following);
@@ -913,7 +965,7 @@ public final class MainActivity extends Activity {
         try { store.open(null); }
         catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
         draft = "";
-        replyStatus = null;
+        clearReplyNotice();
         go(CHAT);
     }
 
@@ -1029,7 +1081,7 @@ public final class MainActivity extends Activity {
             try { store.open(chat); }
             catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
             draft = "";
-            replyStatus = null;
+            clearReplyNotice();
             go(CHAT);
         });
         entry.addView(item, new LinearLayout.LayoutParams(0, WRAP, 1));
@@ -1080,7 +1132,7 @@ public final class MainActivity extends Activity {
                     if (current) {
                         draft = "";
                         input.setText("");
-                        replyStatus = null;
+                        clearReplyNotice();
                         renderMessages();
                     }
                     renderHistory(history);
@@ -1160,7 +1212,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.7 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.8 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }

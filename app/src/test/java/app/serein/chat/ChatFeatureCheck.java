@@ -10,10 +10,59 @@ import java.util.List;
 final class ChatFeatureCheck {
     public static void main(String[] args) throws Exception {
         versions();
+        replyRecovery();
         conversationManagement();
         profileAndPayload();
         routing();
         checkpoints();
+    }
+
+    private static void replyRecovery() throws Exception {
+        var empty = "{\"history\":[],\"active\":\"\"}";
+        var disk = new java.util.concurrent.atomic.AtomicReference<>(empty);
+        var store = new ChatStore(empty, disk::set);
+        var first = new ReplyRetry(null, -1, "failed prompt", true);
+        equal(first.matches(store.active), true);
+        equal(first.consumesDraft("failed prompt"), true);
+        equal(first.consumesDraft("a new draft"), false);
+
+        store.append(-1, "question", "complete", "model", null);
+        var chat = store.active;
+        equal(first.matches(chat), false);
+        var edited = new ReplyRetry(chat, -1, "edited prompt", false);
+        equal(edited.matches(chat), true);
+        equal(edited.parent(), -1);
+        equal(edited.consumesDraft("edited prompt"), false);
+        store.append(0, "follow-up", "received", "model", null, null, ChatHistory.ReplyState.STOPPED);
+        var retry = new ReplyRetry(chat, 0, "replacement", true);
+        equal(edited.matches(chat), false);
+        equal(retry.matches(chat), true);
+        store.append(0, "follow-up", "another fragment", "model", null, null, ChatHistory.ReplyState.INTERRUPTED);
+        equal(retry.matches(chat), false);
+
+        var loaded = new ChatStore(disk.get(), disk::set);
+        equal(loaded.active.history.turn(0).replyState(), ChatHistory.ReplyState.COMPLETE);
+        equal(loaded.active.history.turn(1).replyState(), ChatHistory.ReplyState.STOPPED);
+        equal(loaded.active.history.turn(2).replyState(), ChatHistory.ReplyState.INTERRUPTED);
+        equal(loaded.active.history.variants(2), List.of(1, 2));
+        loaded.selectVersion(1);
+        equal(loaded.active.history.leaf(), 1);
+        equal(loaded.active.history.turn(1).reply(), "received");
+        equal(loaded.active.history.turn(1).assistantText(), "received");
+        equal(loaded.active.history.write().getJSONObject(0).has("replyState"), false);
+        equal(retry.matches(loaded.active), false);
+        loaded.open(null);
+        equal(retry.matches(loaded.active), false);
+
+        var failing = new ChatStore(disk.get(), ignored -> { throw new IllegalStateException("write failure"); });
+        try {
+            failing.append(-1, "unsaved", "partial", "model", null, null, ChatHistory.ReplyState.INTERRUPTED);
+            throw new AssertionError("Expected append failure");
+        } catch (IllegalStateException expected) {
+            equal(failing.active, null);
+            equal(failing.recent.size(), 1);
+        }
+        System.out.println("PASS: partial replies persist by version and retries keep newer drafts and other chats separate");
     }
 
     private static void conversationManagement() throws Exception {

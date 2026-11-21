@@ -11,8 +11,23 @@ import java.util.List;
 import java.util.Map;
 
 final class ChatHistory {
-    record Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState) {
-        Turn(String prompt, String reply, String model) { this(prompt, reply, model, null, Map.of()); }
+    enum ReplyState {
+        COMPLETE, STOPPED, INTERRUPTED;
+
+        static ReplyState read(String saved) {
+            return switch (saved) {
+                case "STOPPED" -> STOPPED;
+                case "INTERRUPTED" -> INTERRUPTED;
+                default -> COMPLETE;
+            };
+        }
+    }
+
+    record Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState,
+                ReplyState replyState) {
+        Turn(String prompt, String reply, String model) {
+            this(prompt, reply, model, null, Map.of(), ReplyState.COMPLETE);
+        }
 
         String assistantText() {
             return card == null ? reply : (reply.isBlank() ? "" : reply + "\n\n") + card.transcript();
@@ -42,7 +57,8 @@ final class ChatHistory {
                 }
             }
             history.append(parent, new Turn(row.getString("prompt"), row.getString("reply"),
-                    row.optString("model", "Serein"), card, Map.copyOf(state)));
+                    row.optString("model", "Serein"), card, Map.copyOf(state),
+                    ReplyState.read(row.optString("replyState"))));
         }
         if (selected >= 0) history.select(selected);
         return history;
@@ -55,6 +71,7 @@ final class ChatHistory {
             JSONObject row = new JSONObject().put("parent", node.parent()).put("prompt", turn.prompt())
                     .put("reply", turn.reply()).put("model", turn.model());
             if (turn.card() != null) row.put("card", turn.card().write()).put("cardState", new JSONObject(turn.cardState()));
+            if (turn.replyState() != ReplyState.COMPLETE) row.put("replyState", turn.replyState().name());
             saved.put(row);
         }
         return saved;
