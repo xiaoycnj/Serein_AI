@@ -48,7 +48,7 @@ final class WebSearchCheck {
         String reply = incomplete + ChatArtifacts.closingFence(incomplete) + "\n\n" + WebSearch.references(hits, true);
         ChatHistory history = new ChatHistory();
         history.append(-1, new ChatHistory.Turn("Current question", reply, "model", null, Map.of(),
-                ChatHistory.ReplyState.COMPLETE, "edited search terms"));
+                ChatHistory.ReplyState.COMPLETE, "edited search terms", null));
         var restored = ChatHistory.read(history.write(), 0).turn(0);
         require(restored.searchQuery().equals("edited search terms") && !restored.assistantText().contains("edited search terms"),
                 "saved query can be confirmed again but stays out of ordinary model history");

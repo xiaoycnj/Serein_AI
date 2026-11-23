@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class ChatHistory {
     enum ReplyState {
@@ -24,9 +25,9 @@ final class ChatHistory {
     }
 
     record Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState,
-                ReplyState replyState, String searchQuery) {
+                ReplyState replyState, String searchQuery, GeneratedImage image) {
         Turn(String prompt, String reply, String model) {
-            this(prompt, reply, model, null, Map.of(), ReplyState.COMPLETE, null);
+            this(prompt, reply, model, null, Map.of(), ReplyState.COMPLETE, null, null);
         }
 
         String assistantText() {
@@ -59,7 +60,8 @@ final class ChatHistory {
             history.append(parent, new Turn(row.getString("prompt"), row.getString("reply"),
                     row.optString("model", "Serein"), card, Map.copyOf(state),
                     ReplyState.read(row.optString("replyState")),
-                    row.isNull("searchQuery") ? null : row.getString("searchQuery")));
+                    row.isNull("searchQuery") ? null : row.getString("searchQuery"),
+                    row.isNull("image") ? null : GeneratedImage.read(row.getJSONObject("image"))));
         }
         if (selected >= 0) history.select(selected);
         return history;
@@ -74,6 +76,7 @@ final class ChatHistory {
             if (turn.card() != null) row.put("card", turn.card().write()).put("cardState", new JSONObject(turn.cardState()));
             if (turn.replyState() != ReplyState.COMPLETE) row.put("replyState", turn.replyState().name());
             if (turn.searchQuery() != null) row.put("searchQuery", turn.searchQuery());
+            if (turn.image() != null) row.put("image", turn.image().write());
             saved.put(row);
         }
         return saved;
@@ -82,6 +85,10 @@ final class ChatHistory {
     int leaf() { return leaf; }
     int parent(int id) { return nodes.get(id).parent(); }
     Turn turn(int id) { return nodes.get(id).turn(); }
+
+    void collectImageIds(Set<String> images) {
+        for (Node node : nodes) if (node.turn().image() != null) images.add(node.turn().image().id());
+    }
 
     void replace(int id, Turn turn) { nodes.set(id, new Node(parent(id), turn)); }
 

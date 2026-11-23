@@ -156,7 +156,7 @@ final class ModelApi {
         }
     }
 
-    private static void writeJson(HttpsURLConnection connection, JSONObject payload) throws IOException {
+    static void writeJson(HttpsURLConnection connection, JSONObject payload) throws IOException {
         byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
@@ -213,7 +213,7 @@ final class ModelApi {
         return new JSONObject().put("role", role).put("content", content);
     }
 
-    private static HttpsURLConnection open(Providers.Provider provider, String path, String accept) throws IOException {
+    static HttpsURLConnection open(Providers.Provider provider, String path, String accept) throws IOException {
         HttpsURLConnection connection = openEndpoint(Providers.httpsBase(provider.base) + path, accept);
         if (provider.anthropicMessages()) {
             connection.setRequestProperty("anthropic-version", "2023-06-01");
@@ -222,7 +222,7 @@ final class ModelApi {
         return connection;
     }
 
-    private static HttpsURLConnection openEndpoint(String endpoint, String accept) throws IOException {
+    static HttpsURLConnection openEndpoint(String endpoint, String accept) throws IOException {
         HttpsURLConnection connection = (HttpsURLConnection) URI.create(endpoint).toURL().openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setUseCaches(false);
@@ -232,7 +232,7 @@ final class ModelApi {
         return connection;
     }
 
-    private static InputStream response(HttpsURLConnection connection) throws IOException {
+    static InputStream response(HttpsURLConnection connection) throws IOException {
         int status = connection.getResponseCode();
         if (status < 200 || status >= 300) throw new IOException(switch (status) {
             case 401, 403 -> "服务商拒绝访问（HTTP " + status + "），请检查当前 Key。";

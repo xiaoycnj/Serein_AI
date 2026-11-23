@@ -39,15 +39,19 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.12 | 让自动模型路由配合聊天选项 | 开启交互卡片时，只自动选择目录标记支持函数调用的模型；手动指定思考强度时使用当前模型 | 路由在本机运行，仅在当前服务商内选择 |
 | Alpha 0.0.13 | 提升外观自定义深度 | 设置页实时预览主题、配色、壁纸、字体和圆角；重启后恢复设置 | 壁纸与字体保存在应用私有目录 |
 | Alpha 0.0.14 | 在对话中查询网页 | 单条消息可用 DeepSeek Search，并保留可点击来源；也可在浏览器打开 Bing | 每次由用户确认检索词 |
+| Alpha 0.0.15 | 在应用内更新和生图 | 关于页检查 GitHub APK 与模型目录；对话中生成、预览和保存图片 | 安装交由 Android 确认；生图由用户逐次提交 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.14
+## Alpha 0.0.15
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
+- 「设置 → 关于 → 检查应用更新」读取 GitHub Releases，支持 Alpha 预发行版。下载后校验 SHA-256、包名、版本和当前安装签名，再交给 Android 安装确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
+- 「热更新模型目录」从 Serein 仓库校验并应用 JSON 模型目录，成功后无需重启。校验失败时使用已有的可用目录。
+- 对话输入框旁的「图片生成」让用户选择服务商、模型 ID 和尺寸，每次发送一条提示词并生成一张图。支持 OpenAI 兼容的 `/images/generations`，接收 Base64、同源 HTTPS 及 Azure Blob HTTPS 图片。结果加密保存在会话中，点图可预览并导出原图。参考 [AstraAgent 生图流程](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/modules/image_generation.py) 和 [OpenAI Images API](https://developers.openai.com/api/reference/resources/images/methods/generate)。
 - 点输入框旁的「联网搜索」，确认检索词后选择「搜索并发送」。应用复用官方 DeepSeek 服务商（https://api.deepseek.com）的当前 API Key。启用在线模型时，检索摘要随本轮对话发送给当前模型；离线演示模式直接显示检索结果。两种模式都会保存可点击的来源。
 - 重新生成联网回复时会打开检索词确认框，让用户处理重试、修改查询和计费。
 - DeepSeek Search 收费独立于模型调用。每次搜索只发送确认后的检索词；Bing 入口通过系统浏览器打开网页结果。详见 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/) 与 [Bing Search API 退役说明](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)。
@@ -76,7 +80,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.14.apk
+adb install -r .\outputs\Serein-Alpha-0.0.15.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。

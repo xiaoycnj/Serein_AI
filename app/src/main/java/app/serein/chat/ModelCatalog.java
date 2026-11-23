@@ -1,6 +1,6 @@
 package app.serein.chat;
 
-import android.content.res.AssetManager;
+import android.content.Context;
 import android.util.Log;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 
 final class ModelCatalog {
+    static final int MAX_BYTES = 1_000_000;
     record Entry(String label, String publisher, String icon, int inputLimit, int tier, double price,
                  boolean routeDisabled, boolean supportsTools) {}
 
@@ -25,26 +26,44 @@ final class ModelCatalog {
 
     private ModelCatalog(Map<String, Entry> entries) { this.entries = entries; }
 
-    static ModelCatalog load(AssetManager assets) {
-        try (InputStream input = assets.open("model-catalog.json")) {
-            JSONObject root = new JSONObject(new String(input.readAllBytes(), StandardCharsets.UTF_8));
-            if (root.getInt("schema") != 1) throw new JSONException("Unknown model catalog schema");
-            JSONObject models = root.getJSONObject("models");
-            Map<String, Entry> entries = new HashMap<>();
-            var keys = models.keys();
-            while (keys.hasNext()) {
-                String id = keys.next();
-                JSONObject row = models.getJSONObject(id);
-                int tier = switch (row.optString("tier")) { case "standard" -> 0; case "flagship" -> 2; default -> 1; };
-                entries.put(id, new Entry(row.getString("label"), row.getString("publisher"), row.getString("icon"),
-                        row.optInt("inputLimit"), tier, row.optDouble("price", Double.POSITIVE_INFINITY),
-                        row.optBoolean("routeDisabled"), row.optBoolean("supportsTools")));
-            }
-            return new ModelCatalog(Map.copyOf(entries));
+    static ModelCatalog load(Context context) {
+        var cache = SereinUpdates.catalogFile(context);
+        if (cache.getBaseFile().exists()) try (InputStream input = cache.openRead()) {
+            return parse(input.readNBytes(MAX_BYTES + 1));
+        } catch (IOException | JSONException error) {
+            Log.w("Serein", "Cached model catalog unavailable", error);
+        }
+        try (InputStream input = context.getAssets().open("model-catalog.json")) {
+            return parse(input.readNBytes(MAX_BYTES + 1));
         } catch (IOException | JSONException error) {
             Log.w("Serein", "Bundled model catalog unavailable", error);
             return new ModelCatalog(Map.of());
         }
+    }
+
+    static ModelCatalog parse(byte[] data) throws JSONException {
+        if (data.length > MAX_BYTES) throw new JSONException("Model catalog too large");
+        JSONObject root = new JSONObject(new String(data, StandardCharsets.UTF_8));
+        if (root.getInt("schema") != 1) throw new JSONException("Unknown model catalog schema");
+        JSONObject models = root.getJSONObject("models");
+        if (models.length() == 0 || models.length() > 5_000) throw new JSONException("Invalid model count");
+        Map<String, Entry> entries = new HashMap<>();
+        var keys = models.keys();
+        while (keys.hasNext()) {
+            String id = keys.next();
+            JSONObject row = models.getJSONObject(id);
+            int tier = switch (row.optString("tier")) { case "standard" -> 0; case "flagship" -> 2; default -> 1; };
+            String label = row.getString("label");
+            String publisher = row.getString("publisher");
+            String icon = row.getString("icon");
+            int inputLimit = row.optInt("inputLimit");
+            double price = row.optDouble("price", Double.POSITIVE_INFINITY);
+            if (id.isBlank() || id.length() > 256 || label.length() > 256 || publisher.length() > 128 || icon.length() > 80
+                    || inputLimit < 0 || price < 0) throw new JSONException("Invalid model metadata");
+            entries.put(id, new Entry(label, publisher, icon, inputLimit, tier, price,
+                    row.optBoolean("routeDisabled"), row.optBoolean("supportsTools")));
+        }
+        return new ModelCatalog(Map.copyOf(entries));
     }
 
     Entry find(String id) { return entries.get(id); }
