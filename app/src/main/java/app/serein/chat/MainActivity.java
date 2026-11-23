@@ -797,6 +797,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout transcript = column();
         transcript.setPadding(dp(18), dp(16), dp(18), dp(12));
+        ReplyRetry attempt = retryReply != null && retryReply.matches(store.active) ? retryReply : null;
         if (store.active != null) {
             ChatHistory history = store.active.history;
             for (int id : history.path(streamReply == null ? history.leaf() : streamReply.parent)) {
@@ -813,12 +814,11 @@ public final class MainActivity extends Activity {
                 if (turn.image() != null) addGeneratedImage(answer, turn.image());
                 if (turn.card() != null) addCard(answer, store.active, id);
                 addFileReferences(answer, turn.references());
-                String status = replyStateLabel(turn.replyState());
-                if (status != null) {
-                    TextView marker = text(status, 13, muted, false);
-                    marker.setPadding(dp(8), dp(4), dp(8), 0);
-                    protectOnWallpaper(marker);
-                    answer.addView(marker);
+                if (turn.replyState() != ChatHistory.ReplyState.COMPLETE) {
+                    ReplyRetry savedReply = ReplyRetry.forTurn(store.active, id);
+                    boolean retryFailed = savedReply.equals(attempt);
+                    replyRecovery(answer, store.active, id, turn, retryFailed ? replyStatus : null);
+                    if (retryFailed) attempt = null;
                 }
                 messageActions(answer, id, markdown.hasArtifacts());
                 space(transcript, 8);
@@ -833,7 +833,7 @@ public final class MainActivity extends Activity {
             liveAnchors = new TurnAnchors(question, answer);
             liveReply.setVisibility(View.GONE);
         }
-        if (replyStatus != null) {
+        if (replyStatus != null && (pendingPrompt != null || attempt != null || retryReply == null)) {
             TextView status = text(replyStatus, 14, muted, false);
             status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             status.setPadding(0, dp(6), 0, dp(8));
@@ -847,17 +847,9 @@ public final class MainActivity extends Activity {
             liveMedia = column();
             liveActions.addView(liveMedia);
             renderToolMedia(streamReply, false);
-        } else if (retryReply != null && retryReply.matches(store.active)) {
-            ReplyRetry attempt = retryReply;
-            View retry = action(attempt.searchQuery() == null ? "重试" : "重试搜索", R.drawable.ic_refresh, 0, ink, tint);
-            retry.setOnClickListener(v -> {
-                if (!sending && retryReply == attempt && attempt.matches(store.active)) {
-                    boolean consumes = attempt.consumesDraft(draft.strip(), draftFiles);
-                    if (attempt.searchQuery() == null) submit(attempt.prompt(), attempt.parent(), consumes, () -> {}, null, attempt.attachments());
-                    else showWebSearch(attempt.prompt(), attempt.parent(), consumes, attempt.searchQuery(), attempt.attachments());
-                }
-            });
-            transcript.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
+        } else if (attempt != null) {
+            ReplyRetry retry = attempt;
+            addRetryButton(transcript, retry.searchQuery() == null ? "重试" : "重试搜索", () -> resend(retry));
         }
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
         directoryButton.setVisibility(turnAnchors.isEmpty() ? View.GONE : View.VISIBLE);
@@ -1137,11 +1129,9 @@ public final class MainActivity extends Activity {
                     () -> copyText(turn.assistantText())));
         }
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
-        actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
-            if (sending) { notice("请先停止当前生成"); return; }
-            if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false, () -> {}, null, turn.attachments());
-            else showWebSearch(turn.prompt(), history.parent(id), false, turn.searchQuery(), turn.attachments());
-        }));
+        if (turn.replyState() == ChatHistory.ReplyState.COMPLETE) {
+            actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> resendTurn(chat, id)));
+        }
         actions.addView(iconButton("消息更多操作", R.drawable.ic_more, muted, 0,
                 () -> showMessageMenu(chat, id, hasArtifacts)));
         List<Integer> versions = history.variants(id);
@@ -1857,12 +1847,37 @@ public final class MainActivity extends Activity {
         new Thread(disconnect, "serein-disconnect").start();
     }
 
-    private static String replyStateLabel(ChatHistory.ReplyState state) {
-        return switch (state) {
-            case COMPLETE -> null;
+    private void replyRecovery(LinearLayout parent, ChatStore.Chat chat, int id, ChatHistory.Turn turn, String problem) {
+        String label = switch (turn.replyState()) {
+            case COMPLETE -> throw new IllegalArgumentException("A complete reply does not need recovery");
             case STOPPED -> "已停止 · 已保留部分回复";
             case INTERRUPTED -> "回复未完成 · 已保留部分回复";
         };
+        if (problem != null) label += "\n" + problem;
+        TextView marker = text(label, 13, muted, false);
+        marker.setPadding(dp(8), dp(4), dp(8), 0);
+        protectOnWallpaper(marker);
+        parent.addView(marker);
+        addRetryButton(parent, turn.searchQuery() == null ? "重试回复" : "重试搜索", () -> resendTurn(chat, id));
+    }
+
+    private void addRetryButton(LinearLayout parent, String label, Runnable send) {
+        View retry = action(label, R.drawable.ic_refresh, 0, ink, tint);
+        retry.setOnClickListener(v -> send.run());
+        parent.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
+    }
+
+    private void resendTurn(ChatStore.Chat chat, int id) {
+        if (store.active != chat || !turnAnchors.containsKey(id)) return;
+        resend(ReplyRetry.forTurn(chat, id));
+    }
+
+    private void resend(ReplyRetry attempt) {
+        if (sending) { notice("请先停止当前生成"); return; }
+        if (importingFile || !attempt.matches(store.active)) return;
+        boolean consumes = attempt.consumesDraft(draft.strip(), draftFiles);
+        if (attempt.searchQuery() == null) submit(attempt.prompt(), attempt.parent(), consumes, () -> {}, null, attempt.attachments());
+        else showWebSearch(attempt.prompt(), attempt.parent(), consumes, attempt.searchQuery(), attempt.attachments());
     }
 
     private void clearReplyNotice() {
@@ -1929,15 +1944,17 @@ public final class MainActivity extends Activity {
             if (current != null && saved) {
                 current.setTextIsSelectable(true);
                 current.setMovementMethod(LinkMovementMethod.getInstance());
-                String status = replyStateLabel(outcome);
-                if (outcome == ChatHistory.ReplyState.INTERRUPTED && problem != null) status += "\n" + problem;
-                liveStatus.setText(status);
-                liveStatus.setVisibility(status == null ? View.GONE : View.VISIBLE);
+                liveStatus.setVisibility(View.GONE);
                 int id = store.active.history.leaf();
                 turnAnchors.put(id, liveAnchors);
                 directoryButton.setVisibility(View.VISIBLE);
                 if (card != null) addCard(liveActions, store.active, id);
                 addFileReferences(liveActions, references);
+                if (outcome != ChatHistory.ReplyState.COMPLETE) {
+                    ChatStore.Chat chat = store.active;
+                    replyRecovery(liveActions, chat, id, chat.history.turn(id),
+                            outcome == ChatHistory.ReplyState.INTERRUPTED ? problem : null);
+                }
                 messageActions(liveActions, id, liveHasArtifacts);
             } else renderMessages(chatScroll.following);
         }

@@ -45,6 +45,16 @@ final class ChatFeatureCheck {
         equal(loaded.active.history.turn(1).replyState(), ChatHistory.ReplyState.STOPPED);
         equal(loaded.active.history.turn(2).replyState(), ChatHistory.ReplyState.INTERRUPTED);
         equal(loaded.active.history.variants(2), List.of(1, 2));
+        var partial = ReplyRetry.forTurn(loaded.active, 2);
+        equal(partial.matches(loaded.active), true);
+        equal(partial.parent(), 0);
+        equal(partial.prompt(), "follow-up");
+        equal(partial.consumesDraft("follow-up"), false);
+        loaded.append(partial.parent(), partial.prompt(), "recovered", "model", null);
+        equal(loaded.active.history.path(loaded.active.history.leaf()), List.of(0, 3));
+        equal(loaded.active.history.variants(3), List.of(1, 2, 3));
+        equal(loaded.active.history.turn(2).reply(), "another fragment");
+        equal(partial.matches(loaded.active), false);
         loaded.selectVersion(1);
         equal(loaded.active.history.leaf(), 1);
         equal(loaded.active.history.turn(1).reply(), "received");

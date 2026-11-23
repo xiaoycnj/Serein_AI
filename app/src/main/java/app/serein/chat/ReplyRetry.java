@@ -2,7 +2,7 @@ package app.serein.chat;
 
 import java.util.List;
 
-// An unsaved attempt belongs to the selected conversation and version, not to its prompt text.
+// A retry belongs to the conversation and branch that were visible when it was offered.
 record ReplyRetry(ChatStore.Chat chat, int leaf, int parent, String prompt, boolean fromComposer, String searchQuery,
                   List<ChatFile> attachments) {
     ReplyRetry {
@@ -20,6 +20,12 @@ record ReplyRetry(ChatStore.Chat chat, int leaf, int parent, String prompt, bool
     ReplyRetry(ChatStore.Chat chat, int parent, String prompt, boolean fromComposer, String searchQuery,
                List<ChatFile> attachments) {
         this(chat, leafOf(chat), parent, prompt, fromComposer, searchQuery, attachments);
+    }
+
+    static ReplyRetry forTurn(ChatStore.Chat chat, int id) {
+        var history = chat.history;
+        var turn = history.turn(id);
+        return new ReplyRetry(chat, history.parent(id), turn.prompt(), false, turn.searchQuery(), turn.attachments());
     }
 
     boolean matches(ChatStore.Chat active) {
