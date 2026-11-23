@@ -1,11 +1,12 @@
-param([string]$Serial, [switch]$ProviderControls, [switch]$OfflineModel, [string]$PickerScreenshot, [string]$RemoveTestProvider)
+param([string]$Serial, [switch]$ProviderControls, [switch]$OfflineModel, [string]$PickerScreenshot, [string]$RemoveTestProvider,
+      [switch]$IsolatedPackage)
 
 $ErrorActionPreference = 'Stop'
 $adb = (Get-Command adb).Source
-$package = 'app.serein.chat'
+$package = if ($IsolatedPackage) { 'app.serein.chat.smoke' } else { 'app.serein.chat' }
 $device = @(if ($Serial) { '-s'; $Serial } else { '-d' })
 $dump = '/data/local/tmp/serein-smoke.xml'
-$testMessage = 'Alpha015-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
+$testMessage = 'Alpha-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
 $samplePrompt = '帮我理顺今天的安排'
 $sampleReply = '先写下今天非做不可的一件事'
 $script:OriginalModelTitle = $null
@@ -298,7 +299,7 @@ function Test-AccountControls {
 }
 
 function Start-Serein {
-    $status = Invoke-Adb shell am start -W -n "$package/.MainActivity"
+    $status = Invoke-Adb shell am start -W -n "$package/app.serein.chat.MainActivity"
     if (($status -join "`n") -notmatch 'Status: ok') { throw ($status -join "`n") }
 }
 
@@ -374,12 +375,22 @@ try {
     Scroll-AppearanceTo '减少动效'
     Tap-Label '返回'
     Tap-Label '关于'
-    Assert-Visible 'Alpha 0.0.15 · Android 13+'
+    $versionInfo = Invoke-Adb shell dumpsys package $package | Select-String 'versionName=(.+?)-alpha\s*$' | Select-Object -First 1
+    if (!$versionInfo) { throw 'Could not read the installed alpha version.' }
+    Assert-Visible "Alpha $($versionInfo.Matches[0].Groups[1].Value) · Android 13+"
     Tap-Label '返回'
     Tap-Label '自定义插件'
     $extensions = Get-Screen
-    foreach ($label in '自动压缩上下文', '自动模型路由') {
-        if (!(Find-Element $extensions $label 'android.widget.Switch')) { throw "Missing extension switch '$label'." }
+    foreach ($label in '模型联网搜索', '模型生成图片', '自动压缩上下文', '自动模型路由') {
+        if (!(Find-Element $extensions $label 'android.widget.Switch')) {
+            Scroll-AppearanceTo $label
+            $extensions = Get-Screen
+        }
+        $toggle = Find-Element $extensions $label 'android.widget.Switch'
+        if (!$toggle) { throw "Missing extension switch '$label'." }
+        if ($IsolatedPackage -and $label -in '模型联网搜索', '模型生成图片' -and $toggle.checked -ne 'false') {
+            throw "Expected '$label' to be off in the isolated package."
+        }
     }
     Tap-Label '返回'
     Tap-Label '返回'

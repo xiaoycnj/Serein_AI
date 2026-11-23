@@ -40,21 +40,21 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.13 | 提升外观自定义深度 | 设置页实时预览主题、配色、壁纸、字体和圆角；重启后恢复设置 | 壁纸与字体保存在应用私有目录 |
 | Alpha 0.0.14 | 在对话中查询网页 | 单条消息可用 DeepSeek Search，并保留可点击来源；也可在浏览器打开 Bing | 每次由用户确认检索词 |
 | Alpha 0.0.15 | 在应用内更新和生图 | 关于页检查 GitHub APK 与模型目录；对话中生成、预览和保存图片 | 安装交由 Android 确认；生图由用户逐次提交 |
+| Alpha 0.0.16 | 简化搜索与生图 | 普通发送后，由模型按需选择已启用的聊天工具；生图在回复内显示占位和结果 | 默认关闭；每条消息最多执行一次工具，不自动重试 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.15
+## Alpha 0.0.16
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 「设置 → 关于 → 检查应用更新」读取 GitHub Releases，支持 Alpha 预发行版。下载后校验 SHA-256、包名、版本和当前安装签名，再交给 Android 安装确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
 - 「热更新模型目录」从 Serein 仓库校验并应用 JSON 模型目录，成功后无需重启。校验失败时使用已有的可用目录。
-- 对话输入框旁的「图片生成」让用户选择服务商、模型 ID 和尺寸，每次发送一条提示词并生成一张图。支持 OpenAI 兼容的 `/images/generations`，接收 Base64、同源 HTTPS 及 Azure Blob HTTPS 图片。结果加密保存在会话中，点图可预览并导出原图。参考 [AstraAgent 生图流程](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/modules/image_generation.py) 和 [OpenAI Images API](https://developers.openai.com/api/reference/resources/images/methods/generate)。
-- 点输入框旁的「联网搜索」，确认检索词后选择「搜索并发送」。应用复用官方 DeepSeek 服务商（https://api.deepseek.com）的当前 API Key。启用在线模型时，检索摘要随本轮对话发送给当前模型；离线演示模式直接显示检索结果。两种模式都会保存可点击的来源。
-- 重新生成联网回复时会打开检索词确认框，让用户处理重试、修改查询和计费。
-- DeepSeek Search 收费独立于模型调用。每次搜索只发送确认后的检索词；Bing 入口通过系统浏览器打开网页结果。详见 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/) 与 [Bing Search API 退役说明](https://learn.microsoft.com/en-us/lifecycle/announcements/bing-search-api-retirement)。
+- 在「设置 → 自定义插件」分别开启「模型联网搜索」和「模型生成图片」，然后像平常一样发消息。在线聊天模型须支持函数调用；离线演示不会调用工具。每轮最多执行一次搜索或生图，之后由聊天模型继续回复，不会自动重试工具。
+- 搜索只向官方 DeepSeek Search 发送模型填写的检索词，需要官方 DeepSeek 服务商的 API Key；摘要交还聊天模型，来源随回复保存。设置中也可手动打开 Bing 网页，旧的手动搜索记录仍可重新确认检索词。详见 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/)。
+- 生图使用「图片服务商」中指定的模型和尺寸，向 OpenAI 兼容的 `/images/generations` 发送模型填写的图像描述。等待时在回复内显示粒子占位，完成后图片弹簧渐入；遵循应用和系统的减少动效设置。搜索和生图都可能单独计费。图片加密保存在会话中，可点开预览并导出原图。参考 [AstraAgent Chat 工具白名单](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/runtime_engine.py) 与 [生图动效](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/css/ui/image-candidates.css)。
 - 从对话内容区靠左、避开屏幕最外侧的位置向右滑可打开侧栏；在侧栏内向左滑可收起。「设置 → 外观 → 侧栏滑动手势」可关闭，键盘展开和触摸探索时不接管手势。
 - 可选的自动模型路由优先保留完整对话，再按任务档位与目录价格选模型。开启交互卡片后，候选需标记支持函数调用。如果没有合适的候选，继续使用手动选中的模型。手动设置非默认思考强度时也会使用当前模型。
 - 每轮消息下方可编辑提问、重新生成回复。两种操作都会创建版本，原回答与后续对话可以通过版本按钮切回。
@@ -80,7 +80,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.15.apk
+adb install -r .\outputs\Serein-Alpha-0.0.16.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。

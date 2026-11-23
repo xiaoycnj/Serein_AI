@@ -105,7 +105,7 @@ public final class MainActivity extends Activity {
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
             new Section("appearance", "外观", "主题、壁纸与排版", R.drawable.ic_sun),
-            new Section("plugins", "自定义插件", "上下文压缩与模型路由", R.drawable.ic_puzzle),
+            new Section("plugins", "自定义插件", "联网搜索、生图与上下文", R.drawable.ic_puzzle),
             new Section("about", "关于", "", R.drawable.ic_info),
             new Section("policy", "相关政策", "本机数据", R.drawable.ic_shield),
             new Section("licenses", "开源声明", "依赖与素材", R.drawable.ic_file),
@@ -146,8 +146,6 @@ public final class MainActivity extends Activity {
     private EditText input;
     private View reasoningRow;
     private MaterialButton sendButton;
-    private MaterialButton webSearchButton;
-    private MaterialButton imageButton;
     private boolean imeVisible;
     private boolean sending;
     private String pendingPrompt;
@@ -159,6 +157,7 @@ public final class MainActivity extends Activity {
     private boolean liveHasArtifacts;
     private TextView liveStatus;
     private LinearLayout liveActions;
+    private LinearLayout liveMedia;
     private String liveSource;
     private Bitmap wallpaper;
     private Typeface importedFont;
@@ -352,8 +351,6 @@ public final class MainActivity extends Activity {
         composerAnchor = null;
         reasoningRow = null;
         sendButton = null;
-        webSearchButton = null;
-        imageButton = null;
         chatScroll = null;
         turnAnchors.clear();
         latestButton = null;
@@ -362,6 +359,7 @@ public final class MainActivity extends Activity {
         liveAnchors = null;
         liveStatus = null;
         liveActions = null;
+        liveMedia = null;
         liveSource = null;
         if (page.equals(CHAT)) renderChat();
         else renderPage();
@@ -453,14 +451,6 @@ public final class MainActivity extends Activity {
         input.setEnabled(!sending);
         composer.addView(input, new LinearLayout.LayoutParams(0, WRAP, 1));
 
-        webSearchButton = iconButton("联网搜索", R.drawable.ic_search, foreground, 0, () ->
-                showWebSearch(draft.strip(), store.active == null ? -1 : store.active.history.leaf(), true,
-                        WebSearch.suggestedQuery(draft)));
-        composer.addView(webSearchButton);
-        imageButton = iconButton("图片生成", R.drawable.ic_image, foreground, 0, () ->
-                showImageGeneration(draft, store.active == null ? -1 : store.active.history.leaf(), true, null));
-        composer.addView(imageButton);
-
         MaterialButton send = iconButton("发送", R.drawable.ic_send, onAccent, accent, () -> {
             if (streamReply != null) stopReply();
             else send();
@@ -494,8 +484,6 @@ public final class MainActivity extends Activity {
         }
         button.setEnabled(ready);
         button.setAlpha(ready ? 1f : .44f);
-        if (webSearchButton != null) webSearchButton.setEnabled(!sending);
-        if (imageButton != null) imageButton.setEnabled(!sending);
     }
 
     private boolean motionEnabled() {
@@ -571,6 +559,7 @@ public final class MainActivity extends Activity {
         liveHasArtifacts = false;
         liveStatus = null;
         liveActions = null;
+        liveMedia = null;
         liveSource = null;
         chatScroll.restorePosition(followLatest, previousY);
         chatScroll.removeAllViews();
@@ -648,6 +637,9 @@ public final class MainActivity extends Activity {
         if (pendingPrompt != null) {
             liveActions = column();
             transcript.addView(liveActions);
+            liveMedia = column();
+            liveActions.addView(liveMedia);
+            renderToolMedia(streamReply, false);
         } else if (retryReply != null && retryReply.matches(store.active)) {
             ReplyRetry attempt = retryReply;
             View retry = action(attempt.searchQuery() == null ? "重试" : "重试搜索", R.drawable.ic_refresh, 0, ink, tint);
@@ -665,6 +657,35 @@ public final class MainActivity extends Activity {
     }
 
     private void addGeneratedImage(LinearLayout parent, GeneratedImage image) {
+        addGeneratedImage(parent, image, false);
+    }
+
+    private void renderToolMedia(StreamReply stream, boolean reveal) {
+        if (streamReply != stream || liveMedia == null) return;
+        liveMedia.removeAllViews();
+        GeneratedImage image = stream.image;
+        if (image != null) addGeneratedImage(liveMedia, image, reveal);
+        else if (stream.pendingImageSize != null) {
+            if (liveStatus != null) liveStatus.setVisibility(View.GONE);
+            var placeholder = new ImagePlaceholder(this, panel, ink, accent, line, this::motionEnabled);
+            liveMedia.addView(placeholder, inlineImageLayout(stream.pendingImageSize));
+        }
+    }
+
+    private LinearLayout.LayoutParams inlineImageLayout(String size) {
+        int width = Math.min(dp(280), Math.max(dp(1), getResources().getDisplayMetrics().widthPixels - dp(36)));
+        int height = switch (size) {
+            case "1024x1536" -> Math.round(width * 1.5f);
+            case "1536x1024" -> Math.round(width / 1.5f);
+            default -> width;
+        };
+        var params = new LinearLayout.LayoutParams(width, height);
+        params.topMargin = dp(8);
+        params.bottomMargin = dp(4);
+        return params;
+    }
+
+    private void addGeneratedImage(LinearLayout parent, GeneratedImage image, boolean reveal) {
         var surface = UiKit.readingSurface(controls, panel, line);
         FrameLayout box = new FrameLayout(this);
         ImageView preview = new ImageView(this);
@@ -675,7 +696,7 @@ public final class MainActivity extends Activity {
         status.setGravity(Gravity.CENTER);
         box.addView(status, new FrameLayout.LayoutParams(MATCH, MATCH));
         surface.addView(box, new FrameLayout.LayoutParams(MATCH, MATCH));
-        parent.addView(surface, new LinearLayout.LayoutParams(MATCH, dp(230)));
+        parent.addView(surface, inlineImageLayout(image.size()));
         localWork.execute(() -> {
             try {
                 Bitmap bitmap = images.preview(image);
@@ -683,6 +704,7 @@ public final class MainActivity extends Activity {
                     if (isDestroyed() || !preview.isAttachedToWindow()) return;
                     status.setVisibility(View.GONE);
                     preview.setImageBitmap(bitmap);
+                    if (reveal) Motion.revealImage(preview, dp(12), motionEnabled());
                     preview.setOnClickListener(v -> showGeneratedImage(image, bitmap));
                 });
             } catch (Exception error) {
@@ -775,7 +797,7 @@ public final class MainActivity extends Activity {
         boolean animate = allowOpening && motionEnabled() && (!stream.presented || liveReply.hasOpening());
         stream.presented = true;
         liveSource = source;
-        if (liveStatus != null) liveStatus.setVisibility(View.GONE);
+        if (liveStatus != null && !stream.searching) liveStatus.setVisibility(View.GONE);
         liveReply.setVisibility(View.VISIBLE);
         liveReply.update(content.text(), animate, dp(2));
     }
@@ -878,8 +900,7 @@ public final class MainActivity extends Activity {
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
         actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
             if (sending) { notice("请先停止当前生成"); return; }
-            if (turn.image() != null) showImageGeneration(turn.prompt(), history.parent(id), false, turn.image());
-            else if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false);
+            if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false);
             else showWebSearch(turn.prompt(), history.parent(id), false, turn.searchQuery());
         }));
         actions.addView(iconButton("消息更多操作", R.drawable.ic_more, muted, 0,
@@ -1032,10 +1053,6 @@ public final class MainActivity extends Activity {
         ChatHistory history = store.active.history;
         LinearLayout body = dialogBody();
         ChatHistory.Turn turn = history.turn(id);
-        if (turn.image() != null) {
-            showImageGeneration(turn.prompt(), history.parent(id), false, turn.image());
-            return;
-        }
         EditText edit = multilineField(body, "提问", turn.prompt(), 4000);
         ScrollView scroll = scroll();
         scroll.addView(body);
@@ -1062,8 +1079,7 @@ public final class MainActivity extends Activity {
 
     private boolean autoRoute() { return prefs.getBoolean("auto_route", false); }
 
-    private void showImageGeneration(String prompt, int parent, boolean fromComposer, GeneratedImage previous) {
-        if (sending) return;
+    private void configureImageTool() {
         var candidates = providers.all.stream().filter(provider -> !provider.anthropicMessages()).toList();
         if (candidates.isEmpty()) {
             showDialog(dialogBuilder().setTitle("图片生成")
@@ -1073,16 +1089,13 @@ public final class MainActivity extends Activity {
             return;
         }
         Providers.Choice selected = providers.choice();
-        Providers.Provider preferred = previous != null ? providers.get(previous.provider())
-                : providers.get(prefs.getString("image_provider", ""));
+        Providers.Provider preferred = providers.get(prefs.getString("image_provider", ""));
         if (preferred == null && selected != null) preferred = selected.provider();
         Providers.Provider[] provider = {candidates.contains(preferred) ? preferred : candidates.get(0)};
         LinearLayout body = dialogBody();
-        body.addView(text("仅发送这次输入的提示词和生图参数。每次生成一张图片，服务商可能计费。", 14, muted, false));
-        EditText promptField = multilineField(body, "图片提示词", prompt, MESSAGE_LIMIT);
         MaterialButton providerButton = action(provider[0].label, R.drawable.ic_link, 0, ink, tint);
         body.addView(providerButton, new LinearLayout.LayoutParams(MATCH, WRAP));
-        EditText model = field(body, "图片模型 ID", previous == null ? imageModelDefault(provider[0]) : previous.model(), false);
+        EditText model = field(body, "图片模型 ID", imageModelDefault(provider[0]), false);
         providerButton.setOnClickListener(v -> {
             String[] labels = candidates.stream().map(candidate -> candidate.label).toArray(String[]::new);
             chooseImageOption("图片服务商", labels, candidates.indexOf(provider[0]), index -> {
@@ -1093,27 +1106,30 @@ public final class MainActivity extends Activity {
         });
         String[] sizes = {"", "1024x1024", "1024x1536", "1536x1024"};
         String[] sizeLabels = {"服务商默认", "方形 1024×1024", "竖图 1024×1536", "横图 1536×1024"};
-        int[] size = {previous == null ? 0 : Math.max(0, List.of(sizes).indexOf(previous.size()))};
+        int[] size = {Math.max(0, List.of(sizes).indexOf(prefs.getString("image_size", "")))};
         MaterialButton sizeButton = action("尺寸 · " + sizeLabels[size[0]], 0, 0, ink, tint);
         body.addView(sizeButton, new LinearLayout.LayoutParams(MATCH, WRAP));
         sizeButton.setOnClickListener(v -> chooseImageOption("图片尺寸", sizeLabels, size[0], index -> {
             size[0] = index;
             sizeButton.setText("尺寸 · " + sizeLabels[index]);
         }));
-        saveForm("图片生成", body, true, "生成", () -> {
-            String requestPrompt = promptField.getText().toString().strip();
+        saveForm("图片服务商", body, true, "保存", () -> {
             String imageModel = model.getText().toString().strip();
-            if (requestPrompt.isBlank() || imageModel.isBlank() || imageModel.length() > 256) {
-                throw new IllegalArgumentException("请输入图片提示词及有效的模型 ID。");
+            if (imageModel.isBlank() || imageModel.length() > 256) {
+                throw new IllegalArgumentException("请输入有效的图片模型 ID。");
             }
-            var request = new ImageGeneration.Request(provider[0], imageModel, sizes[size[0]]);
-            prefs.edit().putString("image_provider", provider[0].id).putString("image_model_" + provider[0].id, imageModel).apply();
-            startReply(requestPrompt, imageModel, parent, fromComposer, "正在生成图片…", null, true, stream -> {
-                byte[] bytes = ImageGeneration.generate(request, requestPrompt, stream.cancellation);
-                GeneratedImage image = images.store(request, bytes);
-                if (!stream.publishImage(image)) images.remove(image.id());
-            });
+            prefs.edit().putString("image_provider", provider[0].id).putString("image_model_" + provider[0].id, imageModel)
+                    .putString("image_size", sizes[size[0]]).apply();
+            render();
         }, null);
+    }
+
+    private ImageGeneration.Request imageToolRequest() {
+        var provider = providers.get(prefs.getString("image_provider", ""));
+        if (provider == null || provider.anthropicMessages()) return null;
+        String model = imageModelDefault(provider);
+        if (model.isBlank()) return null;
+        return new ImageGeneration.Request(provider, model, prefs.getString("image_size", ""));
     }
 
     private void chooseImageOption(String title, String[] labels, int selected, java.util.function.IntConsumer choose) {
@@ -1178,13 +1194,21 @@ public final class MainActivity extends Activity {
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
             try {
                 String terms = WebSearch.checkedQuery(query.getText().toString());
-                var link = android.net.Uri.parse("https://www.bing.com/search").buildUpon()
-                        .appendQueryParameter("q", terms).build();
-                startActivity(new Intent(Intent.ACTION_VIEW, link));
-                dialog.dismiss();
+                if (openBing(terms)) dialog.dismiss();
             } catch (IllegalArgumentException error) { query.setError(error.getMessage()); }
-            catch (android.content.ActivityNotFoundException | SecurityException error) { notice("无法打开浏览器"); }
         });
+    }
+
+    private boolean openBing(String query) {
+        try {
+            var link = android.net.Uri.parse("https://www.bing.com/search");
+            if (!query.isEmpty()) link = link.buildUpon().appendQueryParameter("q", query).build();
+            startActivity(new Intent(Intent.ACTION_VIEW, link));
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException error) {
+            notice("无法打开浏览器");
+            return false;
+        }
     }
 
     private void submit(String message, int parent, boolean fromComposer) {
@@ -1202,8 +1226,7 @@ public final class MainActivity extends Activity {
             if (search != null) {
                 accepted.run();
                 startReply(message, "DeepSeek Search", parent, fromComposer, "正在搜索网页…", search.query(), stream -> {
-                    var hits = ModelApi.search(search.provider(), search.query(), stream.cancellation);
-                    stream.append(WebSearch.references(hits, true));
+                    stream.sources = ModelApi.search(search.provider(), search.query(), stream.cancellation);
                 });
                 return;
             }
@@ -1246,14 +1269,16 @@ public final class MainActivity extends Activity {
         String account = profile.systemPrompt();
         boolean compact = prefs.getBoolean("auto_compact", false);
         boolean cards = prefs.getBoolean("chat_cards", false);
-        Providers.Choice target = routeChoice(choice, message, history, account, compact, cards);
+        var web = search == null && prefs.getBoolean("chat_web", false) ? searchProvider(choice) : null;
+        var image = search == null && prefs.getBoolean("chat_image", false) ? imageToolRequest() : null;
+        Providers.Choice target = routeChoice(choice, message, history, account, compact, cards || web != null || image != null);
         String providerScope = target.provider().id + "_" + target.provider().base;
         String consent = account.isEmpty() && !compact ? "consent_" + providerScope
                 : "consent_extensions_" + !account.isEmpty() + "_" + compact + "_" + providerScope;
         Runnable send = () -> {
             accepted.run();
             sendOnline(target, message, parent, fromComposer, path, history,
-                    chat == null ? null : chat.checkpoint, account, compact, cards, search);
+                    chat == null ? null : chat.checkpoint, account, compact, cards, search, web, image);
         };
         if (!prefs.getBoolean(consent, false)) {
             showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
@@ -1288,7 +1313,8 @@ public final class MainActivity extends Activity {
 
     private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
                             List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
-                            String account, boolean compact, boolean iui, SearchRequest search) {
+                            String account, boolean compact, boolean iui, SearchRequest search,
+                            Providers.Provider web, ImageGeneration.Request image) {
         int level = effort(choice);
         ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
         int inputLimit = entry == null ? 0 : entry.inputLimit();
@@ -1297,6 +1323,8 @@ public final class MainActivity extends Activity {
         String model = choice.model().title();
         String scope = choice.provider().id + "\n" + choice.provider().base + "\n" + choice.model().id();
         String waiting = "等待 " + model + " 回复…";
+        boolean supportsTools = entry == null || entry.supportsTools();
+        var tools = new ChatTools.Options(supportsTools && web != null, supportsTools && image != null);
         String initial = search != null ? "正在搜索网页…" : preparing ? "正在压缩较早的对话…" : waiting;
         startReply(message, model, parent, fromComposer, initial, search == null ? null : search.query(), stream -> {
             String prompt = message;
@@ -1325,15 +1353,41 @@ public final class MainActivity extends Activity {
             stream.cancellation.check();
             stream.checkpoint = context.checkpoint();
             stream.card = ModelApi.chat(choice, context.recent(), prompt, level, account, context.summary(),
-                    iui, stream.cancellation, stream::append);
+                    iui && supportsTools, tools, (name, argument) -> runChatTool(stream, name, argument, web, image, waiting),
+                    stream.cancellation, stream::append);
         });
+    }
+
+    private String runChatTool(StreamReply stream, String name, String argument, Providers.Provider web,
+                               ImageGeneration.Request request, String waiting) throws Exception {
+        stream.toolAttempt = true;
+        if (ChatTools.SEARCH.equals(name)) {
+            stream.searching = true;
+            updateReplyStatus(stream, "正在搜索网页…");
+            var hits = ModelApi.search(web, argument, stream.cancellation);
+            stream.sources = hits;
+            stream.searching = false;
+            updateReplyStatus(stream, waiting);
+            return ChatTools.searchResult(hits);
+        }
+        stream.pendingImageSize = request.size();
+        ui.post(() -> renderToolMedia(stream, false));
+        byte[] bytes = ImageGeneration.generate(request, argument, stream.cancellation);
+        GeneratedImage image = images.store(request, bytes);
+        if (!stream.publishImage(image)) images.remove(image.id());
+        ui.post(() -> renderToolMedia(stream, true));
+        updateReplyStatus(stream, waiting);
+        return "One image was generated and is displayed inline in the chat. Do not invent an image link or call another tool.";
     }
 
     private void updateReplyStatus(StreamReply stream, String status) {
         ui.post(() -> {
             if (streamReply != stream) return;
             replyStatus = status;
-            if (liveStatus != null) liveStatus.setText(status);
+            if (liveStatus != null) {
+                liveStatus.setText(status);
+                liveStatus.setVisibility(View.VISIBLE);
+            }
         });
     }
 
@@ -1348,7 +1402,9 @@ public final class MainActivity extends Activity {
         final int parent;
         final boolean fromComposer;
         final String searchQuery;
-        final boolean imageAttempt;
+        volatile boolean toolAttempt;
+        volatile boolean searching;
+        volatile String pendingImageSize;
         final ModelApi.Cancellation cancellation = new ModelApi.Cancellation();
         final StringBuilder content = new StringBuilder();
         final Choreographer frames = Choreographer.getInstance();
@@ -1360,15 +1416,14 @@ public final class MainActivity extends Activity {
         long nextRefresh;
         volatile ChatContext.Checkpoint checkpoint;
         volatile ChatCard card;
-        GeneratedImage image;
+        volatile GeneratedImage image;
         volatile List<WebSearch.Hit> sources = List.of();
 
-        StreamReply(String model, int parent, boolean fromComposer, String searchQuery, boolean imageAttempt) {
+        StreamReply(String model, int parent, boolean fromComposer, String searchQuery) {
             this.model = model;
             this.parent = parent;
             this.fromComposer = fromComposer;
             this.searchQuery = searchQuery;
-            this.imageAttempt = imageAttempt;
         }
 
         synchronized boolean publishImage(GeneratedImage result) {
@@ -1412,12 +1467,7 @@ public final class MainActivity extends Activity {
 
     private void startReply(String message, String model, int parent, boolean fromComposer, String status, String searchQuery,
                             ReplySource source) {
-        startReply(message, model, parent, fromComposer, status, searchQuery, false, source);
-    }
-
-    private void startReply(String message, String model, int parent, boolean fromComposer, String status, String searchQuery,
-                            boolean imageAttempt, ReplySource source) {
-        StreamReply stream = new StreamReply(model, parent, fromComposer, searchQuery, imageAttempt);
+        StreamReply stream = new StreamReply(model, parent, fromComposer, searchQuery);
         streamReply = stream;
         sending = true;
         pendingPrompt = message;
@@ -1473,11 +1523,17 @@ public final class MainActivity extends Activity {
         String message = pendingPrompt;
         String reply = stream.snapshot();
         ChatCard card = outcome == ChatHistory.ReplyState.COMPLETE ? stream.card : null;
-        GeneratedImage image = outcome == ChatHistory.ReplyState.COMPLETE ? stream.image : null;
-        if (image != null) reply = "已生成图片";
-        if ((!reply.isBlank() || card != null) && !stream.sources.isEmpty()) {
-            reply += ChatArtifacts.closingFence(reply) + "\n\n" + WebSearch.references(stream.sources, false);
+        GeneratedImage image = stream.image;
+        if (image != null && reply.isBlank()) reply = "已生成图片";
+        if (!stream.sources.isEmpty()) {
+            reply = reply.isBlank() ? WebSearch.references(stream.sources, true)
+                    : reply + ChatArtifacts.closingFence(reply) + "\n\n" + WebSearch.references(stream.sources, false);
         }
+        if (liveMedia != null && image == null) liveMedia.removeAllViews();
+        if (liveMedia != null && image != null && (liveMedia.getChildCount() == 0 || liveMedia.getChildAt(0) instanceof ImagePlaceholder)) {
+            renderToolMedia(stream, true);
+        }
+        stream.searching = false;
         showStream(stream, reply, outcome == ChatHistory.ReplyState.COMPLETE);
         streamReply = null;
         sending = false;
@@ -1487,9 +1543,9 @@ public final class MainActivity extends Activity {
         if (reply.isBlank() && card == null) {
             if (replyStatus == null) replyStatus = "模型没有返回可显示的文本。";
             if (stream.fromComposer) draft = message;
-            if (!stream.imageAttempt) {
+            if (!stream.toolAttempt) {
                 retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer, stream.searchQuery);
-            } else if (replyStatus != null) replyStatus += "\n可从「图片生成」再次提交。";
+            }
         } else {
             try {
                 store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome, stream.searchQuery, image);
@@ -1501,7 +1557,7 @@ public final class MainActivity extends Activity {
                 replyStatus = "收到回复，但无法保存本机聊天记录。";
             }
         }
-        if (stream.image != null && (!saved || image == null)) localWork.execute(() -> images.remove(stream.image.id()));
+        if (image != null && !saved) localWork.execute(() -> images.remove(image.id()));
         if (input != null) {
             input.setEnabled(true);
             input.setText(draft);
@@ -1519,7 +1575,6 @@ public final class MainActivity extends Activity {
                 turnAnchors.put(id, liveAnchors);
                 directoryButton.setVisibility(View.VISIBLE);
                 if (card != null) addCard(liveActions, store.active, id);
-                if (image != null) addGeneratedImage(liveActions, image);
                 messageActions(liveActions, id, liveHasArtifacts);
             } else renderMessages(chatScroll.following);
         }
@@ -1857,7 +1912,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.15 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha " + appVersionName().replaceFirst("-alpha$", "") + " · Android 13+", 14, muted, false));
                 space(body, 12);
                 addRow(body, "检查应用更新", "GitHub Releases", R.drawable.ic_refresh, this::checkAppUpdate);
                 if (SereinUpdates.apk(this).isFile()) {
@@ -1867,7 +1922,7 @@ public final class MainActivity extends Activity {
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话历史、归档、交互卡片选择、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。会话搜索在本机内存运行。主动发起联网搜索时，检索词发送给 DeepSeek，结果摘要可能随本轮对话发送给当前聊天模型。选择在 Bing 打开时，浏览器会将检索词发送给 Bing。通过系统文件选择器导出的文件不受应用内加密保护。在线聊天内容会通过 HTTPS 发给当前服务商。交互卡片选择不会随历史自动发送；加入草稿后仍需手动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
+            case "policy" -> body.addView(text("会话、生成图片、账户资料及服务商配置在本机加密保存。在线聊天内容通过 HTTPS 发给当前服务商。开启聊天搜索后，模型生成的检索词会发给 DeepSeek，结果摘要回传聊天模型。通过 Bing 打开时，浏览器会向 Bing 发送检索词。开启聊天生图后，模型生成的图像描述会发给所选图片服务商。通过系统文件选择器导出的文件不受应用内加密保护。交互卡片选择不会随历史自动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
@@ -2484,6 +2539,11 @@ public final class MainActivity extends Activity {
         catch (IllegalStateException error) { notice("无法更新本机服务商配置"); return false; }
     }
 
+    private String appVersionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (android.content.pm.PackageManager.NameNotFoundException impossible) { return ""; }
+    }
+
     private String networkMessage(Exception error) {
         if (error instanceof java.net.SocketTimeoutException) return "连接超时，请重试。";
         if (error instanceof javax.net.ssl.SSLException) return "无法验证 HTTPS 连接。";
@@ -2632,12 +2692,36 @@ public final class MainActivity extends Activity {
     }
 
     private void chatExtensions(LinearLayout body) {
+        var search = searchProvider(providers.choice());
+        var image = imageToolRequest();
+        sectionTitle(body, "聊天工具");
+        var webToggle = settingSwitch(body, "模型联网搜索", prefs.getBoolean("chat_web", false));
+        webToggle.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("chat_web", checked).apply());
+        body.addView(text(search == null ? "未配置官方 DeepSeek API Key" : "DeepSeek · 发送检索词，可能单独计费", 13, muted, false));
+        if (search == null) {
+            var connect = action("服务商连接", R.drawable.ic_link, 0, ink, tint);
+            connect.setOnClickListener(v -> go("providers"));
+            body.addView(connect, new LinearLayout.LayoutParams(WRAP, WRAP));
+        }
+        var bing = action("在浏览器打开 Bing", R.drawable.ic_search, 0, ink, tint);
+        bing.setOnClickListener(v -> openBing(""));
+        body.addView(bing, new LinearLayout.LayoutParams(WRAP, WRAP));
+        rule(body);
+        var imageToggle = settingSwitch(body, "模型生成图片", prefs.getBoolean("chat_image", false));
+        imageToggle.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("chat_image", checked).apply());
+        body.addView(text(image == null ? "未配置图片服务商" : image.provider().label + " · " + image.model()
+                + "\n发送模型生成的图像描述，每张图可能单独计费。", 13, muted, false));
+        var configure = action("图片服务商", R.drawable.ic_image, 0, ink, tint);
+        configure.setOnClickListener(v -> configureImageTool());
+        body.addView(configure, new LinearLayout.LayoutParams(WRAP, WRAP));
+        rule(body);
+        sectionTitle(body, "对话增强");
         MaterialSwitch compact = settingSwitch(body, "自动压缩上下文", prefs.getBoolean("auto_compact", false));
         body.addView(text("长对话可能向当前服务商发出额外的摘要请求。", 13, muted, false));
         compact.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_compact", checked).apply());
         space(body, 10);
         MaterialSwitch route = settingSwitch(body, "自动模型路由", autoRoute());
-        body.addView(text("只在当前服务商内选模型。开启交互卡片时，自动选用目录中标记支持函数调用的模型；手动设置思考强度时使用当前模型。", 13, muted, false));
+        body.addView(text("只在当前服务商内选模型。启用聊天工具时，优先选用支持函数调用的模型。", 13, muted, false));
         route.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_route", checked).apply());
         rule(body);
         MaterialSwitch cards = settingSwitch(body, "交互卡片", prefs.getBoolean("chat_cards", false));

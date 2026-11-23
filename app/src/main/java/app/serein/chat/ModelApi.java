@@ -82,6 +82,51 @@ final class ModelApi {
         return call == null ? null : call.result();
     }
 
+    static ChatCard chat(Providers.Choice choice, List<ChatHistory.Turn> history, String prompt, int effort,
+                         String profile, String summary, boolean iui, ChatTools.Options options, ChatTools.Action action,
+                         Cancellation cancellation, Consumer<String> delta) throws Exception {
+        if (!options.enabled()) return chat(choice, history, prompt, effort, profile, summary, iui, cancellation, delta);
+        boolean anthropic = choice.provider().anthropicMessages();
+        JSONObject body = payload(choice.model(), history, prompt, effort, profile, summary, anthropic);
+        return chatWithTools(body, anthropic, iui, options, action, cancellation, delta,
+                (request, receive, call) -> request(choice.provider(), request, true, cancellation, receive, call));
+    }
+
+    @FunctionalInterface interface ChatTransport {
+        void read(JSONObject body, Consumer<String> delta, IuiCall call) throws IOException, JSONException;
+    }
+
+    static ChatCard chatWithTools(JSONObject body, boolean anthropic, boolean iui, ChatTools.Options options,
+                                  ChatTools.Action action, Cancellation cancellation, Consumer<String> delta,
+                                  ChatTransport transport) throws Exception {
+        body.put("tools", options.schemas(anthropic, iui));
+        IuiCall first = new IuiCall(true);
+        cancellation.check();
+        transport.read(body, delta, first);
+        cancellation.check();
+        String name = first.name();
+        if (name.isEmpty()) return null;
+        if (iui && ChatCard.TOOL.equals(name)) return first.result();
+        if (!options.allows(name)) throw new IOException("模型请求了未启用的聊天工具。");
+        ChatTools.Invocation call = first.invocation();
+        String argument = call.argument();
+        cancellation.check();
+        String result = action.run(name, argument);
+        cancellation.check();
+        call.appendResult(body.getJSONArray("messages"), anthropic, result);
+        body.put("tool_choice", anthropic ? new JSONObject().put("type", "none") : "none");
+        boolean[] paragraph = {!call.text().isBlank()};
+        transport.read(body, part -> {
+            if (paragraph[0] && !part.isBlank()) {
+                paragraph[0] = false;
+                delta.accept("\n\n");
+            }
+            delta.accept(part);
+        }, null);
+        cancellation.check();
+        return null;
+    }
+
     static String summarize(Providers.Choice choice, String previous, String fragment, Cancellation cancellation)
             throws IOException, JSONException {
         JSONArray messages = new JSONArray().put(message("system", "Summarize this old chat history as a checkpoint. "
@@ -323,6 +368,7 @@ final class ModelApi {
             for (int index = 0; index < choices.length(); index++) {
                 JSONObject choice = choices.getJSONObject(index);
                 if (choice.optInt("index", index) != 0) continue;
+                IuiCall.capture(call, choice.optJSONObject("delta"), "content");
                 emitText(choice.optJSONObject("delta"), delta);
                 IuiCall.completions(call, choice.optJSONObject("delta"));
                 return finished(choice, call);
@@ -340,11 +386,13 @@ final class ModelApi {
         switch (type) {
             case "content_block_start" -> {
                 JSONObject block = chunk.optJSONObject("content_block");
+                if (block != null && "text".equals(block.optString("type"))) IuiCall.capture(call, block, "text");
                 emitBlockText(block, "text", delta);
                 IuiCall.anthropicStart(call, chunk.optInt("index", -1), block);
             }
             case "content_block_delta" -> {
                 JSONObject update = chunk.optJSONObject("delta");
+                if (update != null && "text_delta".equals(update.optString("type"))) IuiCall.capture(call, update, "text");
                 emitBlockText(update, "text_delta", delta);
                 IuiCall.anthropicDelta(call, chunk.optInt("index", -1), update);
             }
@@ -368,12 +416,14 @@ final class ModelApi {
             JSONArray content = result.getJSONArray("content");
             for (int i = 0; i < content.length(); i++) {
                 JSONObject block = content.getJSONObject(i);
+                if ("text".equals(block.optString("type"))) IuiCall.capture(call, block, "text");
                 emitBlockText(block, "text", delta);
                 IuiCall.anthropicStart(call, i, block);
             }
             finishedAnthropic(result, call);
         } else {
             JSONObject item = result.getJSONArray("choices").getJSONObject(0);
+            IuiCall.capture(call, item.optJSONObject("message"), "content");
             emitText(item.optJSONObject("message"), delta);
             IuiCall.completions(call, item.optJSONObject("message"));
             finished(item, call);

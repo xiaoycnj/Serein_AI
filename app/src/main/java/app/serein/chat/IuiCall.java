@@ -7,12 +7,27 @@ import org.json.JSONObject;
 import java.io.IOException;
 
 final class IuiCall {
+    private static final int MAX_TOOL_NAME = 64;
     private final StringBuilder name = new StringBuilder();
     private final StringBuilder arguments = new StringBuilder();
+    private final StringBuilder id = new StringBuilder();
+    private final StringBuilder text = new StringBuilder();
+    private final StringBuilder reasoning = new StringBuilder();
+    private final boolean chatTools;
     private JSONObject initial;
     private boolean seen;
     private boolean finished;
     private int index = -1;
+
+    IuiCall() { this(false); }
+
+    IuiCall(boolean chatTools) { this.chatTools = chatTools; }
+
+    static void capture(IuiCall call, JSONObject value, String field) throws IOException, JSONException {
+        if (call == null || !call.chatTools || value == null) return;
+        if (value.opt(field) instanceof String) append(call.text, value, field, 1_000_000);
+        if (value.opt("reasoning_content") instanceof String) append(call.reasoning, value, "reasoning_content", 1_000_000);
+    }
 
     static void completions(IuiCall call, JSONObject message) throws IOException, JSONException {
         if (message == null || message.isNull("tool_calls")) return;
@@ -22,9 +37,10 @@ final class IuiCall {
             if (call == null || part.optInt("index", i) != 0
                     || !"function".equals(part.optString("type", "function"))) throw unsupported();
             call.seen = true;
+            if (call.chatTools) append(call.id, part, "id", 256);
             JSONObject function = part.optJSONObject("function");
             if (function == null) continue;
-            append(call.name, function, "name", ChatCard.TOOL.length());
+            append(call.name, function, "name", MAX_TOOL_NAME);
             append(call.arguments, function, "arguments", ChatCard.MAX_ARGUMENTS);
         }
     }
@@ -34,7 +50,8 @@ final class IuiCall {
         if (call == null || call.seen || index < 0) throw unsupported();
         call.seen = true;
         call.index = index;
-        append(call.name, block, "name", ChatCard.TOOL.length());
+        if (call.chatTools) append(call.id, block, "id", 256);
+        append(call.name, block, "name", MAX_TOOL_NAME);
         call.initial = block.getJSONObject("input");
     }
 
@@ -59,6 +76,19 @@ final class IuiCall {
         }
     }
 
+    String name() throws IOException {
+        if (!seen) return "";
+        if (!finished || name.isEmpty()) throw unsupported();
+        return name.toString();
+    }
+
+    ChatTools.Invocation invocation() throws IOException {
+        String tool = name();
+        if (!chatTools || !id.toString().matches("[A-Za-z0-9_-]{1,256}")) throw unsupported();
+        String input = arguments.isEmpty() && initial != null ? initial.toString() : arguments.toString();
+        return new ChatTools.Invocation(id.toString(), tool, input, text.toString(), reasoning.toString());
+    }
+
     private static void append(StringBuilder buffer, JSONObject source, String key, int limit)
             throws JSONException, IOException {
         if (!source.has(key)) return;
@@ -67,6 +97,6 @@ final class IuiCall {
     }
 
     private static IOException unsupported() {
-        return new IOException("模型返回了不受支持或不完整的交互卡片调用。");
+        return new IOException("模型返回了不受支持或不完整的工具调用。");
     }
 }

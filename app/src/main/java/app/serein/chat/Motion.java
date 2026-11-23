@@ -21,6 +21,18 @@ final class Motion {
                 .setInterpolator(SPRING).setDuration(330).start();
     }
 
+    static void revealImage(View view, float offset, boolean enabled) {
+        if (!enabled) return;
+        view.setPivotX(0f);
+        view.setPivotY(0f);
+        view.setTranslationY(offset);
+        view.setScaleX(.94f);
+        view.setScaleY(.94f);
+        view.setAlpha(0f);
+        view.animate().translationY(0f).scaleX(1f).scaleY(1f).alpha(1f)
+                .setInterpolator(SPRING).setDuration(560).start();
+    }
+
     static void press(View view, java.util.function.BooleanSupplier enabled) {
         view.setOnTouchListener((button, event) -> {
             switch (event.getActionMasked()) {
