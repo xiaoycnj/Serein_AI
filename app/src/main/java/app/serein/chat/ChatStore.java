@@ -193,9 +193,16 @@ final class ChatStore {
 
     void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState, String searchQuery, GeneratedImage image) {
+        append(parent, prompt, reply, model, checkpoint, card, replyState, searchQuery, image, List.of(), List.of(), "");
+    }
+
+    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+                ChatHistory.ReplyState replyState, String searchQuery, GeneratedImage image,
+                List<ChatFile> attachments, List<ChatFile> references, String imageScope) {
         Chat previous = active;
         if (active == null) {
             String firstLine = prompt.split("\\R", 2)[0];
+            if (firstLine.isBlank() && !attachments.isEmpty()) firstLine = attachments.get(0).name();
             int length = firstLine.codePointCount(0, firstLine.length());
             String title = length <= 24 ? firstLine : firstLine.substring(0, firstLine.offsetByCodePoints(0, 24)) + "…";
             active = new Chat(UUID.randomUUID().toString(), title, 0, new ChatHistory());
@@ -204,7 +211,8 @@ final class ChatStore {
         int oldPosition = recent.indexOf(active);
         int oldLeaf = active.history.leaf();
         ChatContext.Checkpoint oldCheckpoint = active.checkpoint;
-        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState, searchQuery, image));
+        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState,
+                searchQuery, image, attachments, references, imageScope));
         if (checkpoint != null) active.checkpoint = checkpoint;
         active.updatedAt = System.currentTimeMillis();
         recent.remove(active);
@@ -233,7 +241,8 @@ final class ChatStore {
         Map<String, Object> state = new HashMap<>(previous.cardState());
         state.put(key, value);
         chat.history.replace(id, new ChatHistory.Turn(previous.prompt(), previous.reply(), previous.model(),
-                previous.card(), Map.copyOf(state), previous.replyState(), previous.searchQuery(), previous.image()));
+                previous.card(), Map.copyOf(state), previous.replyState(), previous.searchQuery(), previous.image(),
+                previous.attachments(), previous.references(), previous.imageScope()));
         try { save(); }
         catch (RuntimeException error) { chat.history.replace(id, previous); throw error; }
     }

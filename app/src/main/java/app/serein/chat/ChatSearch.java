@@ -42,7 +42,9 @@ final class ChatSearch {
             for (int i = source.turns().size() - 1; i >= 0; i--) {
                 if (Thread.currentThread().isInterrupted()) return new Results(List.of(), false);
                 Entry entry = source.turns().get(i);
-                Candidate question = candidate(entry.id(), false, entry.turn().prompt(), terms);
+                StringBuilder input = new StringBuilder(entry.turn().prompt());
+                for (ChatFile file : entry.turn().attachments()) input.append('\n').append(file.name());
+                Candidate question = candidate(entry.id(), false, input.toString(), terms);
                 Candidate answer = candidate(entry.id(), true, entry.turn().assistantText(), terms);
                 covered |= question.bits() | answer.bits();
                 if (question.bits() != 0 && better(question, best)) best = question;

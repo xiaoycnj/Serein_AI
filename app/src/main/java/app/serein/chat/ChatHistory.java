@@ -25,13 +25,38 @@ final class ChatHistory {
     }
 
     record Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState,
-                ReplyState replyState, String searchQuery, GeneratedImage image) {
+                ReplyState replyState, String searchQuery, GeneratedImage image,
+                List<ChatFile> attachments, List<ChatFile> references, String imageScope) {
+        Turn {
+            attachments = List.copyOf(attachments);
+            references = List.copyOf(references);
+        }
+
+        Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState,
+             ReplyState replyState, String searchQuery, GeneratedImage image,
+             List<ChatFile> attachments, List<ChatFile> references) {
+            this(prompt, reply, model, card, cardState, replyState, searchQuery, image, attachments, references, "");
+        }
+
+        Turn(String prompt, String reply, String model, ChatCard card, Map<String, Object> cardState,
+             ReplyState replyState, String searchQuery, GeneratedImage image) {
+            this(prompt, reply, model, card, cardState, replyState, searchQuery, image, List.of(), List.of());
+        }
+
         Turn(String prompt, String reply, String model) {
             this(prompt, reply, model, null, Map.of(), ReplyState.COMPLETE, null, null);
         }
 
         String assistantText() {
             return card == null ? reply : (reply.isBlank() ? "" : reply + "\n\n") + card.transcript();
+        }
+
+        String promptLabel() {
+            return prompt.isBlank() && !attachments.isEmpty() ? attachments.get(0).name() : prompt;
+        }
+
+        String historyPrompt() {
+            return prompt.isBlank() && !attachments.isEmpty() ? "（这条消息附有文件。）" : prompt;
         }
     }
     private record Node(int parent, Turn turn) {}
@@ -61,7 +86,9 @@ final class ChatHistory {
                     row.optString("model", "Serein"), card, Map.copyOf(state),
                     ReplyState.read(row.optString("replyState")),
                     row.isNull("searchQuery") ? null : row.getString("searchQuery"),
-                    row.isNull("image") ? null : GeneratedImage.read(row.getJSONObject("image"))));
+                    row.isNull("image") ? null : GeneratedImage.read(row.getJSONObject("image")),
+                    ChatFile.readList(row.optJSONArray("attachments"), ChatFile.MAX_ATTACHMENTS),
+                    ChatFile.readList(row.optJSONArray("fileReferences"), ChatReferences.MAX_CITATIONS), row.optString("imageScope")));
         }
         if (selected >= 0) history.select(selected);
         return history;
@@ -77,6 +104,9 @@ final class ChatHistory {
             if (turn.replyState() != ReplyState.COMPLETE) row.put("replyState", turn.replyState().name());
             if (turn.searchQuery() != null) row.put("searchQuery", turn.searchQuery());
             if (turn.image() != null) row.put("image", turn.image().write());
+            if (!turn.attachments().isEmpty()) row.put("attachments", ChatFile.writeList(turn.attachments()));
+            if (!turn.references().isEmpty()) row.put("fileReferences", ChatFile.writeList(turn.references()));
+            if (!turn.imageScope().isEmpty()) row.put("imageScope", turn.imageScope());
             saved.put(row);
         }
         return saved;
@@ -88,6 +118,13 @@ final class ChatHistory {
 
     void collectImageIds(Set<String> images) {
         for (Node node : nodes) if (node.turn().image() != null) images.add(node.turn().image().id());
+    }
+
+    void collectFileIds(Set<String> files) {
+        for (Node node : nodes) {
+            for (ChatFile file : node.turn().attachments()) files.add(file.id());
+            for (ChatFile file : node.turn().references()) files.add(file.id());
+        }
     }
 
     void replace(int id, Turn turn) { nodes.set(id, new Node(parent(id), turn)); }

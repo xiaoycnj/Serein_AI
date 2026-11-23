@@ -24,7 +24,7 @@ final class ChatContext {
 
     static long estimate(List<ChatHistory.Turn> history, String profile, String prompt) {
         long total = estimate(profile) + estimate(prompt);
-        for (ChatHistory.Turn turn : history) total += (long) estimate(turn.prompt()) + estimate(turn.assistantText());
+        for (ChatHistory.Turn turn : history) total += (long) estimate(turn.historyPrompt()) + estimate(turn.assistantText());
         return total;
     }
 
@@ -72,15 +72,20 @@ final class ChatContext {
 
     static Context prepare(List<ChatHistory.Turn> turns, List<Integer> path, String profile, String prompt,
                            int inputLimit, String scope, Checkpoint cached, Summarizer summarizer) throws Exception {
+        return prepare(turns, path, profile, prompt, inputLimit, scope, cached, 0, summarizer);
+    }
+
+    static Context prepare(List<ChatHistory.Turn> turns, List<Integer> path, String profile, String prompt,
+                           int inputLimit, String scope, Checkpoint cached, int reserved, Summarizer summarizer) throws Exception {
         int capacity = budget(inputLimit);
-        long original = estimate(turns, profile, prompt);
+        long original = estimate(turns, profile, prompt) + reserved;
         if (original <= threshold(inputLimit)) return new Context(turns, "", null);
         int end = Math.max(0, turns.size() - KEEP_TURNS);
         int previous = cached != null && cached.scope().equals(scope) ? path.indexOf(cached.through()) : -1;
         String summary = previous >= 0 && previous < end ? cached.text() : "";
         int start = summary.isEmpty() ? 0 : previous + 1;
         List<ChatHistory.Turn> recent = turns.subList(end, turns.size());
-        long tail = estimate(recent, profile, prompt);
+        long tail = estimate(recent, profile, prompt) + reserved;
         if (end == 0 || tail + MAX_SUMMARY_CHARS + 32 > capacity) {
             if (original <= capacity) return new Context(turns, "", null);
             throw new IOException("模型的上下文空间不足以保留最近对话，请选择上下文更大的模型或新建聊天。");
@@ -104,7 +109,7 @@ final class ChatContext {
         StringBuilder pending = new StringBuilder(limit);
         for (ChatHistory.Turn turn : older) {
             append(result, pending, "\nUser: ", limit);
-            append(result, pending, turn.prompt(), limit);
+            append(result, pending, turn.historyPrompt(), limit);
             append(result, pending, "\nAssistant: ", limit);
             append(result, pending, turn.assistantText(), limit);
         }

@@ -78,14 +78,14 @@ final class IuiCall {
 
     String name() throws IOException {
         if (!seen) return "";
-        if (!finished || name.isEmpty()) throw unsupported();
+        if (!finished || name.length() == 0) throw unsupported();
         return name.toString();
     }
 
     ChatTools.Invocation invocation() throws IOException {
         String tool = name();
         if (!chatTools || !id.toString().matches("[A-Za-z0-9_-]{1,256}")) throw unsupported();
-        String input = arguments.isEmpty() && initial != null ? initial.toString() : arguments.toString();
+        String input = arguments.length() == 0 && initial != null ? initial.toString() : arguments.toString();
         return new ChatTools.Invocation(id.toString(), tool, input, text.toString(), reasoning.toString());
     }
 

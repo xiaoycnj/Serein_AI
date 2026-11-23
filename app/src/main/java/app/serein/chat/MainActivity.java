@@ -49,6 +49,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -65,6 +66,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.progressindicator.CircularProgressIndicator;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.slider.Slider;
@@ -90,6 +92,9 @@ public final class MainActivity extends Activity {
     private static final String SETTINGS = "settings";
     private static final String ACCOUNT = "account";
     private static final String SEARCH = "history-search";
+    private static final String FILE_SPACE = "file-space";
+    private static final String MEMORIES = "memories";
+    private static final String APP_UPDATE = "app-update";
     private static final int MATCH = -1;
     private static final int WRAP = -2;
     private static final int MESSAGE_LIMIT = 4000;
@@ -100,7 +105,12 @@ public final class MainActivity extends Activity {
     private record TurnAnchors(View prompt, View answer) {}
     private record MenuItem(String label, Runnable action) {}
     private record SearchRequest(Providers.Provider provider, String query) {}
-    private record ExportState(ChatArtifacts.Document document, GeneratedImage image) {}
+    private record LocalChatContext(List<ChatFile> attached, List<ChatFile> recent, List<ChatFile> documents,
+                                    List<ChatFile> library, boolean memory, String imageScope) {
+        boolean hasDocuments() { return !documents.isEmpty() || !library.isEmpty(); }
+    }
+    private record RetainedState(ChatArtifacts.Document document, GeneratedImage image, String draft,
+                                 List<ChatFile> attachments, FileSpace files, ChatMemory memory, AppUpdate update) {}
 
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
@@ -118,7 +128,14 @@ public final class MainActivity extends Activity {
     private Providers providers;
     private ModelCatalog modelCatalog;
     private ImageLibrary images;
+    private FileSpace files;
+    private ChatMemory memory;
+    private AppUpdate appUpdate;
     private boolean updateRunning;
+    private LinearLayout updateBody;
+    private CircularProgressIndicator updateRing;
+    private TextView updateBytes;
+    private AppUpdate.Phase visibleUpdatePhase;
     private String providerPage;
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
     private final ExecutorService localWork = Executors.newSingleThreadExecutor();
@@ -146,6 +163,11 @@ public final class MainActivity extends Activity {
     private EditText input;
     private View reasoningRow;
     private MaterialButton sendButton;
+    private MaterialButton attachmentButton;
+    private LinearLayout attachmentTray;
+    private List<ChatFile> draftFiles = List.of();
+    private boolean importingFile;
+    private boolean fileSpaceFromComposer;
     private boolean imeVisible;
     private boolean sending;
     private String pendingPrompt;
@@ -169,6 +191,9 @@ public final class MainActivity extends Activity {
     private static final int CREATE_IMAGE_EXPORT = 873;
     private static final int PICK_BACKGROUND = 870;
     private static final int PICK_CHAT_FONT = 872;
+    private static final int PICK_ATTACHMENT = 874;
+    private static final int PICK_LIBRARY_FILE = 875;
+    private static final int INSTALL_UPDATE = 876;
     private String page = CHAT;
     private String draft = "";
     private boolean backRegistered;
@@ -179,9 +204,14 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        if (getLastNonConfigurationInstance() instanceof ExportState state) {
+        if (getLastNonConfigurationInstance() instanceof RetainedState state) {
             pendingExport = state.document();
             pendingImageExport = state.image();
+            draft = state.draft();
+            draftFiles = state.attachments();
+            files = state.files();
+            memory = state.memory();
+            appUpdate = state.update();
         }
         prefs = getSharedPreferences("serein", MODE_PRIVATE);
         setRecentsScreenshotEnabled(false);
@@ -194,6 +224,8 @@ public final class MainActivity extends Activity {
             modelCatalog = ModelCatalog.load(this);
             providers = new Providers(vault, modelCatalog);
             images = new ImageLibrary(this);
+            if (files == null) files = new FileSpace(this, vault);
+            if (memory == null) memory = new ChatMemory(vault);
         } catch (RuntimeException error) {
             showDialog(dialogBuilder().setTitle("无法读取本机数据")
                     .setMessage("已保留原有文件。请重新启动 Serein 后再试。")
@@ -201,11 +233,18 @@ public final class MainActivity extends Activity {
             return;
         }
         var referenced = imageReferences();
+        var fileIds = fileReferences();
         long orphanCutoff = System.currentTimeMillis() - 10 * 60 * 1000L;
-        localWork.execute(() -> images.prune(referenced, orphanCutoff));
+        localWork.execute(() -> {
+            images.prune(referenced, orphanCutoff);
+            files.prune(fileIds, orphanCutoff);
+        });
+        if (appUpdate == null) appUpdate = new AppUpdate(this);
+        appUpdate.observe(this::onAppUpdate);
         if (saved != null) {
             page = saved.getString("page", CHAT);
             providerPage = saved.getString("providerPage");
+            fileSpaceFromComposer = saved.getBoolean("fileSpaceFromComposer");
             if (page.equals("provider") && providers.get(providerPage) == null) page = "providers";
         }
         getWindow().setDecorFitsSystemWindows(false);
@@ -227,6 +266,7 @@ public final class MainActivity extends Activity {
         setContentView(root);
         render();
         root.requestApplyInsets();
+        if (page.equals(APP_UPDATE) && appUpdate.current().phase() == AppUpdate.Phase.IDLE) appUpdate.check();
     }
 
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
@@ -290,6 +330,7 @@ public final class MainActivity extends Activity {
         super.onSaveInstanceState(out);
         out.putString("page", page);
         out.putString("providerPage", providerPage);
+        out.putBoolean("fileSpaceFromComposer", fileSpaceFromComposer);
     }
 
     @Override protected void onDestroy() {
@@ -297,6 +338,10 @@ public final class MainActivity extends Activity {
         for (AlertDialog dialog : List.copyOf(openDialogs)) if (dialog.isShowing()) dialog.dismiss();
         openDialogs.clear();
         if (streamReply != null) cancelStream(streamReply);
+        if (appUpdate != null) {
+            appUpdate.observe(null);
+            if (!isChangingConfigurations()) appUpdate.close();
+        }
         cancelHistorySearch();
         ui.removeCallbacksAndMessages(null);
         worker.shutdownNow();
@@ -305,7 +350,11 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    @Override public Object onRetainNonConfigurationInstance() { return new ExportState(pendingExport, pendingImageExport); }
+    @Override public Object onRetainNonConfigurationInstance() {
+        String retainedDraft = streamReply != null && streamReply.fromComposer ? pendingPrompt : draft;
+        List<ChatFile> retainedFiles = streamReply != null && streamReply.fromComposer ? streamReply.attachments : draftFiles;
+        return new RetainedState(pendingExport, pendingImageExport, retainedDraft, retainedFiles, files, memory, appUpdate);
+    }
 
     private void palette() {
         String theme = prefs.getString("theme", "system");
@@ -335,6 +384,10 @@ public final class MainActivity extends Activity {
     private void render() {
         int appearancePosition = page.equals("appearance") && appearanceScroll != null ? appearanceScroll.getScrollY() : 0;
         appearanceScroll = null;
+        updateBody = null;
+        updateRing = null;
+        updateBytes = null;
+        visibleUpdatePhase = null;
         updateAppearancePreview = null;
         if (activeNotice != null) activeNotice.dismiss();
         cancelHistorySearch();
@@ -351,6 +404,8 @@ public final class MainActivity extends Activity {
         composerAnchor = null;
         reasoningRow = null;
         sendButton = null;
+        attachmentButton = null;
+        attachmentTray = null;
         chatScroll = null;
         turnAnchors.clear();
         latestButton = null;
@@ -427,13 +482,15 @@ public final class MainActivity extends Activity {
         LinearLayout composer = row();
         composerAnchor = composer;
         composer.setGravity(Gravity.CENTER_VERTICAL);
-        composer.setPadding(dp(12), dp(3), dp(4), dp(3));
+        composer.setPadding(dp(3), dp(3), dp(4), dp(3));
         int fill = composerFill();
         int foreground = chatInk(fill);
         int surface = chatSurface(fill, foreground);
         int hint = Appearance.readable(muted, foreground, fill);
         if ((surface >>> 24) < 255) hint = foreground;
         composer.setBackground(shape(surface, composerRadius(), line));
+        attachmentButton = iconButton("添加附件", R.drawable.ic_paperclip, foreground, 0, this::attachmentMenu);
+        composer.addView(attachmentButton);
         input = UiKit.inlineField(controls);
         input.setHint("发消息");
         input.setTextColor(foreground);
@@ -469,12 +526,20 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams composerLayout = new LinearLayout.LayoutParams(MATCH, WRAP);
         composerLayout.setMargins(dp(16), dp(8), dp(16), dp(10));
         screen.addView(buildReasoning(choice), new LinearLayout.LayoutParams(MATCH, WRAP));
+        var trayScroll = new HorizontalScrollView(this);
+        trayScroll.setHorizontalScrollBarEnabled(false);
+        trayScroll.setFillViewport(false);
+        attachmentTray = row();
+        attachmentTray.setPadding(dp(16), 0, dp(16), 0);
+        trayScroll.addView(attachmentTray, new FrameLayout.LayoutParams(WRAP, WRAP));
+        screen.addView(trayScroll, new LinearLayout.LayoutParams(MATCH, WRAP));
         screen.addView(composer, composerLayout);
+        renderDraftFiles();
         updateReasoning(false);
     }
 
     private void updateSend(MaterialButton button) {
-        boolean ready = sending || !draft.isBlank();
+        boolean ready = sending || !importingFile && (!draft.isBlank() || !draftFiles.isEmpty());
         String label = sending ? "停止生成" : "发送";
         if (!label.contentEquals(button.getContentDescription())) {
             button.setIconResource(sending ? R.drawable.ic_stop : R.drawable.ic_send);
@@ -484,10 +549,151 @@ public final class MainActivity extends Activity {
         }
         button.setEnabled(ready);
         button.setAlpha(ready ? 1f : .44f);
+        if (attachmentButton != null) attachmentButton.setEnabled(!sending && !importingFile);
     }
 
     private boolean motionEnabled() {
         return !prefs.getBoolean("reduce_motion", false) && ValueAnimator.areAnimatorsEnabled();
+    }
+
+    private void renderDraftFiles() {
+        if (attachmentTray == null) return;
+        attachmentTray.removeAllViews();
+        ((View) attachmentTray.getParent()).setVisibility(draftFiles.isEmpty() ? View.GONE : View.VISIBLE);
+        for (ChatFile file : draftFiles) {
+            LinearLayout chip = row();
+            chip.setGravity(Gravity.CENTER_VERTICAL);
+            chip.setBackground(shape(panel, 8, line));
+            var open = action(file.name(), file.image() ? R.drawable.ic_image : R.drawable.ic_file, 0, ink, 0);
+            open.setMaxWidth(dp(170));
+            open.setSingleLine(true);
+            open.setEllipsize(TextUtils.TruncateAt.END);
+            open.setOnClickListener(v -> previewFile(file));
+            chip.addView(open, new LinearLayout.LayoutParams(WRAP, WRAP));
+            chip.addView(iconButton("移除附件 " + file.name(), R.drawable.ic_close, muted, 0, () -> {
+                var next = new ArrayList<>(draftFiles);
+                next.remove(file);
+                draftFiles = List.copyOf(next);
+                if (retryReply != null && retryReply.attachments().contains(file)) {
+                    clearReplyNotice();
+                    renderMessages(chatScroll.following);
+                }
+                removeUnusedFiles(new java.util.HashSet<>(java.util.Set.of(file.id())));
+                renderDraftFiles();
+                updateSend(sendButton);
+            }));
+            var params = new LinearLayout.LayoutParams(WRAP, WRAP);
+            params.setMarginEnd(dp(8));
+            attachmentTray.addView(chip, params);
+        }
+    }
+
+    private boolean canAttach() {
+        if (sending || importingFile) return false;
+        if (draftFiles.size() < ChatFile.MAX_ATTACHMENTS) return true;
+        notice("每条消息最多添加 " + ChatFile.MAX_ATTACHMENTS + " 个附件");
+        return false;
+    }
+
+    private void attachmentMenu() {
+        if (!canAttach()) return;
+        if (files.library().isEmpty()) { pickFile(false); return; }
+        showMenu("添加附件", List.of(new MenuItem("从设备选择", () -> pickFile(false)),
+                new MenuItem("从资料库选择", () -> openFileSpace(true))));
+    }
+
+    private void openFileSpace(boolean fromComposer) {
+        hideKeyboard();
+        fileSpaceFromComposer = fromComposer;
+        go(FILE_SPACE);
+    }
+
+    private void pickFile(boolean library) {
+        if (importingFile || (!library && !canAttach())) return;
+        hideKeyboard();
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+        try { startActivityForResult(picker, library ? PICK_LIBRARY_FILE : PICK_ATTACHMENT); }
+        catch (android.content.ActivityNotFoundException | SecurityException error) { notice("找不到系统文件选择器"); }
+    }
+
+    @FunctionalInterface private interface FileImport { ChatFile read() throws Exception; }
+
+    private void importFile(boolean library, FileImport source, boolean returnToChat) {
+        if (importingFile || (!library && !canAttach())) return;
+        importingFile = true;
+        if (sendButton != null) updateSend(sendButton);
+        if (page.equals(FILE_SPACE)) render();
+        notice(library ? "正在导入资料…" : "正在读取附件…");
+        localWork.execute(() -> {
+            ChatFile item = null;
+            String errorMessage = null;
+            try { item = source.read(); }
+            catch (FileText.Rejected error) { errorMessage = error.getMessage(); }
+            catch (Exception error) { errorMessage = "无法读取所选文件。"; }
+            ChatFile imported = item;
+            String problem = errorMessage;
+            ui.post(() -> {
+                importingFile = false;
+                if (isDestroyed() || isFinishing()) {
+                    if (imported != null && !library) files.removeOrphan(imported.id());
+                    return;
+                }
+                if (imported != null && !library) {
+                    var next = new ArrayList<>(draftFiles);
+                    next.add(imported);
+                    draftFiles = List.copyOf(next);
+                }
+                if (returnToChat && imported != null && page.equals(FILE_SPACE)) go(CHAT);
+                else if (page.equals(FILE_SPACE)) render();
+                if (sendButton != null) {
+                    renderDraftFiles();
+                    updateSend(sendButton);
+                }
+                if (imported == null) notice(problem == null ? "无法导入文件。" : problem);
+                else if (library) notice("已导入资料库");
+            });
+        });
+    }
+
+    private void previewFile(ChatFile file) { previewFile(file, false); }
+
+    private void previewFile(ChatFile file, boolean library) {
+        View owner = screen;
+        localWork.execute(() -> {
+            try {
+                Object content = file.image() ? files.previewImage(file) : files.text(file);
+                ui.post(() -> {
+                    if (isDestroyed() || isFinishing() || screen != owner) return;
+                    ScrollView scroller = scroll();
+                    LinearLayout body = dialogBody();
+                    body.addView(text(fileSize(file), 12, muted, false));
+                    space(body, 10);
+                    if (content instanceof Bitmap bitmap) {
+                        ImageView picture = new ImageView(this);
+                        picture.setImageBitmap(bitmap);
+                        picture.setAdjustViewBounds(true);
+                        picture.setContentDescription(file.name());
+                        body.addView(picture, new LinearLayout.LayoutParams(MATCH, WRAP));
+                    } else {
+                        TextView preview = text((String) content, 15, ink, false);
+                        preview.setTextIsSelectable(true);
+                        body.addView(preview);
+                    }
+                    scroller.addView(body);
+                    var builder = dialogBuilder().setTitle(file.name()).setView(scroller).setNegativeButton("关闭", null);
+                    if (library && !sending && !importingFile) {
+                        builder.setPositiveButton("附加到聊天", (d, i) -> importFile(false, () -> files.copyToChat(file), true));
+                    }
+                    showDialog(builder.create(), true);
+                });
+            } catch (Exception error) {
+                ui.post(() -> { if (screen == owner) notice("文件已移除或无法读取"); });
+            }
+        });
+    }
+
+    private String fileSize(ChatFile file) {
+        return android.text.format.Formatter.formatShortFileSize(this, file.bytes());
     }
 
     private String[] effortLabels(Providers.Choice choice) {
@@ -595,7 +801,7 @@ public final class MainActivity extends Activity {
             ChatHistory history = store.active.history;
             for (int id : history.path(streamReply == null ? history.leaf() : streamReply.parent)) {
                 ChatHistory.Turn turn = history.turn(id);
-                View question = messageBubble(transcript, turn.prompt());
+                View question = userMessage(transcript, turn.prompt(), turn.attachments());
                 space(transcript, 15);
                 LinearLayout answer = column();
                 transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
@@ -606,6 +812,7 @@ public final class MainActivity extends Activity {
                 if (turn.reply().isBlank()) reply.setVisibility(View.GONE);
                 if (turn.image() != null) addGeneratedImage(answer, turn.image());
                 if (turn.card() != null) addCard(answer, store.active, id);
+                addFileReferences(answer, turn.references());
                 String status = replyStateLabel(turn.replyState());
                 if (status != null) {
                     TextView marker = text(status, 13, muted, false);
@@ -618,7 +825,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (pendingPrompt != null) {
-            View question = messageBubble(transcript, pendingPrompt);
+            View question = userMessage(transcript, pendingPrompt, streamReply.attachments);
             space(transcript, 15);
             LinearLayout answer = column();
             transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
@@ -645,8 +852,9 @@ public final class MainActivity extends Activity {
             View retry = action(attempt.searchQuery() == null ? "重试" : "重试搜索", R.drawable.ic_refresh, 0, ink, tint);
             retry.setOnClickListener(v -> {
                 if (!sending && retryReply == attempt && attempt.matches(store.active)) {
-                    if (attempt.searchQuery() == null) submit(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft));
-                    else showWebSearch(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft), attempt.searchQuery());
+                    boolean consumes = attempt.consumesDraft(draft.strip(), draftFiles);
+                    if (attempt.searchQuery() == null) submit(attempt.prompt(), attempt.parent(), consumes, () -> {}, null, attempt.attachments());
+                    else showWebSearch(attempt.prompt(), attempt.parent(), consumes, attempt.searchQuery(), attempt.attachments());
                 }
             });
             transcript.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
@@ -886,6 +1094,37 @@ public final class MainActivity extends Activity {
         return user;
     }
 
+    private View userMessage(LinearLayout transcript, String message, List<ChatFile> attached) {
+        if (attached.isEmpty()) return messageBubble(transcript, message);
+        LinearLayout group = column();
+        group.setGravity(Gravity.END);
+        transcript.addView(group, new LinearLayout.LayoutParams(MATCH, WRAP));
+        for (ChatFile file : attached) {
+            var button = action(file.name(), file.image() ? R.drawable.ic_image : R.drawable.ic_file, 0, ink, tint);
+            button.setMaxWidth(Math.min(dp(288), (int) (getResources().getDisplayMetrics().widthPixels * .76)));
+            button.setSingleLine(true);
+            button.setEllipsize(TextUtils.TruncateAt.END);
+            button.setOnClickListener(v -> previewFile(file));
+            var layout = new LinearLayout.LayoutParams(WRAP, WRAP);
+            layout.bottomMargin = dp(4);
+            group.addView(button, layout);
+        }
+        if (!message.isBlank()) messageBubble(group, message);
+        return group;
+    }
+
+    private void addFileReferences(LinearLayout answer, List<ChatFile> references) {
+        if (references.isEmpty()) return;
+        List<MenuItem> sources = new ArrayList<>();
+        for (int i = 0; i < references.size(); i++) {
+            ChatFile file = references.get(i);
+            sources.add(new MenuItem("[F" + (i + 1) + "] " + file.name(), () -> previewFile(file)));
+        }
+        MaterialButton sourcesButton = action("资料引用 · " + references.size(), R.drawable.ic_file, 0, ink, tint);
+        sourcesButton.setOnClickListener(v -> showMenu("资料引用", sources));
+        answer.addView(sourcesButton, new LinearLayout.LayoutParams(WRAP, WRAP));
+    }
+
     private void messageActions(LinearLayout transcript, int id, boolean hasArtifacts) {
         LinearLayout actions = row();
         actions.setGravity(Gravity.CENTER_VERTICAL);
@@ -900,8 +1139,8 @@ public final class MainActivity extends Activity {
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
         actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
             if (sending) { notice("请先停止当前生成"); return; }
-            if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false);
-            else showWebSearch(turn.prompt(), history.parent(id), false, turn.searchQuery());
+            if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false, () -> {}, null, turn.attachments());
+            else showWebSearch(turn.prompt(), history.parent(id), false, turn.searchQuery(), turn.attachments());
         }));
         actions.addView(iconButton("消息更多操作", R.drawable.ic_more, muted, 0,
                 () -> showMessageMenu(chat, id, hasArtifacts)));
@@ -917,7 +1156,7 @@ public final class MainActivity extends Activity {
                 String[] labels = new String[versions.size()];
                 for (int i = 0; i < labels.length; i++) {
                     ChatHistory.Turn version = history.turn(versions.get(i));
-                    labels[i] = (i + 1) + " · " + preview(version.prompt(), 32) + "\n" + preview(version.assistantText(), 56);
+                    labels[i] = (i + 1) + " · " + preview(version.promptLabel(), 32) + "\n" + preview(version.assistantText(), 56);
                 }
                 showDialog(dialogBuilder().setTitle("对话版本").setSingleChoiceItems(labels, current, (dialog, index) -> {
                     try {
@@ -950,7 +1189,7 @@ public final class MainActivity extends Activity {
         List<MenuItem> items = new ArrayList<>();
         int number = 1;
         for (int id : turnAnchors.keySet()) {
-            String label = number++ + " · " + preview(chat.history.turn(id).prompt(), 82);
+            String label = number++ + " · " + preview(chat.history.turn(id).promptLabel(), 82);
             items.add(new MenuItem(label, () -> jumpTo(chat, id, false)));
         }
         showMenu("消息目录", items);
@@ -999,8 +1238,7 @@ public final class MainActivity extends Activity {
         confirmLeavingDraft(() -> {
             try { store.fork(chat, id); }
             catch (IllegalStateException error) { notice("无法创建会话分支"); return; }
-            draft = "";
-            clearReplyNotice();
+            discardDraft();
             go(CHAT);
         });
     }
@@ -1053,6 +1291,11 @@ public final class MainActivity extends Activity {
         ChatHistory history = store.active.history;
         LinearLayout body = dialogBody();
         ChatHistory.Turn turn = history.turn(id);
+        if (!turn.attachments().isEmpty()) {
+            body.addView(text(turn.attachments().stream().map(ChatFile::name).collect(java.util.stream.Collectors.joining(" · ")),
+                    13, muted, false));
+            space(body, 8);
+        }
         EditText edit = multilineField(body, "提问", turn.prompt(), 4000);
         ScrollView scroll = scroll();
         scroll.addView(body);
@@ -1061,26 +1304,27 @@ public final class MainActivity extends Activity {
         showDialog(dialog, true);
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String value = edit.getText().toString().strip();
-            if (value.isEmpty()) { edit.setError("请输入提问"); return; }
-            if (turn.searchQuery() == null) submit(value, history.parent(id), false, dialog::dismiss);
+            if (value.isEmpty() && turn.attachments().isEmpty()) { edit.setError("请输入提问"); return; }
+            if (turn.searchQuery() == null) submit(value, history.parent(id), false, dialog::dismiss, null, turn.attachments());
             else {
                 dialog.dismiss();
                 showWebSearch(value, history.parent(id), false,
-                        value.equals(turn.prompt()) ? turn.searchQuery() : WebSearch.suggestedQuery(value));
+                        value.equals(turn.prompt()) ? turn.searchQuery() : WebSearch.suggestedQuery(value), turn.attachments());
             }
         });
     }
 
     private void send() {
         String message = draft.strip();
-        if (message.isBlank() || sending) return;
+        if (sending || importingFile || (message.isBlank() && draftFiles.isEmpty())) return;
         submit(message, store.active == null ? -1 : store.active.history.leaf(), true);
     }
 
     private boolean autoRoute() { return prefs.getBoolean("auto_route", false); }
 
     private void configureImageTool() {
-        var candidates = providers.all.stream().filter(provider -> !provider.anthropicMessages()).toList();
+        var candidates = providers.all.stream().filter(provider -> !provider.anthropicMessages())
+                .collect(java.util.stream.Collectors.toList());
         if (candidates.isEmpty()) {
             showDialog(dialogBuilder().setTitle("图片生成")
                     .setMessage("请先添加支持 OpenAI Images API 的服务商。")
@@ -1154,6 +1398,20 @@ public final class MainActivity extends Activity {
         return ids;
     }
 
+    private java.util.Set<String> fileReferences() {
+        var ids = new java.util.HashSet<String>();
+        for (ChatStore.Chat chat : store.recent) chat.history.collectFileIds(ids);
+        for (ChatFile file : draftFiles) ids.add(file.id());
+        if (retryReply != null) for (ChatFile file : retryReply.attachments()) ids.add(file.id());
+        if (streamReply != null) for (ChatFile file : streamReply.attachments) ids.add(file.id());
+        return ids;
+    }
+
+    private void removeUnusedFiles(java.util.Set<String> candidates) {
+        candidates.removeAll(fileReferences());
+        if (!candidates.isEmpty()) localWork.execute(() -> candidates.forEach(files::removeOrphan));
+    }
+
     private Providers.Provider searchProvider(Providers.Choice choice) {
         if (choice != null && WebSearch.officialProvider(choice.provider().base) && !choice.provider().secret().isBlank()) {
             return choice.provider();
@@ -1164,7 +1422,7 @@ public final class MainActivity extends Activity {
         return null;
     }
 
-    private void showWebSearch(String message, int parent, boolean fromComposer, String suggestedQuery) {
+    private void showWebSearch(String message, int parent, boolean fromComposer, String suggestedQuery, List<ChatFile> attached) {
         if (sending) return;
         Providers.Choice choice = providers.choice();
         Providers.Provider provider = searchProvider(choice);
@@ -1188,7 +1446,7 @@ public final class MainActivity extends Activity {
             try {
                 String terms = WebSearch.checkedQuery(query.getText().toString());
                 dialog.dismiss();
-                submit(message.isBlank() ? terms : message, parent, fromComposer, () -> {}, new SearchRequest(provider, terms));
+                submit(message.isBlank() ? terms : message, parent, fromComposer, () -> {}, new SearchRequest(provider, terms), attached);
             } catch (IllegalArgumentException error) { query.setError(error.getMessage()); }
         });
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
@@ -1212,17 +1470,19 @@ public final class MainActivity extends Activity {
     }
 
     private void submit(String message, int parent, boolean fromComposer) {
-        submit(message, parent, fromComposer, () -> {});
+        submit(message, parent, fromComposer, () -> {}, null, fromComposer ? draftFiles : List.of());
     }
 
-    private void submit(String message, int parent, boolean fromComposer, Runnable accepted) {
-        submit(message, parent, fromComposer, accepted, null);
-    }
-
-    private void submit(String message, int parent, boolean fromComposer, Runnable accepted, SearchRequest search) {
-        if (sending) return;
+    private void submit(String message, int parent, boolean fromComposer, Runnable accepted, SearchRequest search,
+                        List<ChatFile> attached) {
+        if (sending || importingFile) return;
+        if (attached.stream().anyMatch(file -> !files.exists(file))) {
+            notice("附件已移除，请重新添加。");
+            return;
+        }
         Providers.Choice choice = providers.choice();
         if (choice == null) {
+            if (!attached.isEmpty()) { notice("请选择支持该附件类型的在线模型"); return; }
             if (search != null) {
                 accepted.run();
                 startReply(message, "DeepSeek Search", parent, fromComposer, "正在搜索网页…", search.query(), stream -> {
@@ -1266,34 +1526,55 @@ public final class MainActivity extends Activity {
         List<Integer> path = chat == null ? List.of() : chat.history.path(parent);
         List<ChatHistory.Turn> history = new ArrayList<>(path.size());
         for (int id : path) history.add(chat.history.turn(id));
+        String manualScope = chatScope(choice);
+        List<ChatFile> chatFiles = ChatAttachments.available(history, attached, manualScope);
+        List<ChatFile> documents = ChatAttachments.searchableDocuments(history, attached);
+        List<ChatFile> library = prefs.getBoolean("chat_file_space", false) ? files.library() : List.of();
+        boolean memoryEnabled = prefs.getBoolean("chat_memory", false);
+        boolean hasFileContext = !chatFiles.isEmpty() || !documents.isEmpty();
+        boolean documentTools = !library.isEmpty() || !documents.isEmpty();
         String account = profile.systemPrompt();
+        String systemPrompt = hasFileContext || documentTools || memoryEnabled
+                ? (account.isBlank() ? "" : account + "\n\n") + ChatReferences.INSTRUCTIONS : account;
         boolean compact = prefs.getBoolean("auto_compact", false);
         boolean cards = prefs.getBoolean("chat_cards", false);
-        var web = search == null && prefs.getBoolean("chat_web", false) ? searchProvider(choice) : null;
-        var image = search == null && prefs.getBoolean("chat_image", false) ? imageToolRequest() : null;
-        Providers.Choice target = routeChoice(choice, message, history, account, compact, cards || web != null || image != null);
+        var web = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_web", false) ? searchProvider(choice) : null;
+        var image = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_image", false) ? imageToolRequest() : null;
+        boolean tools = cards || web != null || image != null || documentTools || memoryEnabled;
+        Providers.Choice target = ChatAttachments.hasImages(chatFiles) ? choice
+                : routeChoice(choice, message, history, systemPrompt, compact, tools, ChatAttachments.estimate(chatFiles));
+        var local = new LocalChatContext(attached, chatFiles, documents, library, memoryEnabled,
+                manualScope.equals(chatScope(target)) ? manualScope : "");
         String providerScope = target.provider().id + "_" + target.provider().base;
         String consent = account.isEmpty() && !compact ? "consent_" + providerScope
                 : "consent_extensions_" + !account.isEmpty() + "_" + compact + "_" + providerScope;
+        if (hasFileContext || !library.isEmpty() || memoryEnabled) {
+            consent = "consent_local_" + hasFileContext + "_" + !library.isEmpty() + "_" + memoryEnabled + "_" + consent;
+        }
+        String consentKey = consent;
         Runnable send = () -> {
             accepted.run();
             sendOnline(target, message, parent, fromComposer, path, history,
-                    chat == null ? null : chat.checkpoint, account, compact, cards, search, web, image);
+                    chat == null ? null : chat.checkpoint, systemPrompt, compact, cards, search, web, image,
+                    local);
         };
-        if (!prefs.getBoolean(consent, false)) {
+        if (!prefs.getBoolean(consentKey, false)) {
             showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
                     .setMessage(target.provider().base + "\n\n将发送当前版本的聊天内容。"
+                            + (hasFileContext ? "随附图片和相关附件摘录可能发送给此服务商。" : "")
+                            + (library.isEmpty() ? "" : "模型检索命中的资料摘录会发送给此服务商。")
+                            + (memoryEnabled ? "模型检索命中的记忆也会发送给此服务商。" : "")
                             + (account.isEmpty() ? "" : "已开启账户资料分享，名称和简介也会发送。")
                             + (compact ? "长对话可能先发送旧消息生成摘要，产生额外请求和费用。" : ""))
                     .setNegativeButton("取消", null).setPositiveButton("发送", (dialog, item) -> {
-                        prefs.edit().putBoolean(consent, true).apply();
+                        prefs.edit().putBoolean(consentKey, true).apply();
                         send.run();
                     }).create(), true);
         } else send.run();
     }
 
     private Providers.Choice routeChoice(Providers.Choice manual, String message, List<ChatHistory.Turn> history,
-                                         String account, boolean compact, boolean cards) {
+                                         String account, boolean compact, boolean tools, int attachmentCost) {
         if (!autoRoute() || effort(manual) > 0) return manual;
         List<ChatContext.ModelSpec> candidates = new ArrayList<>();
         for (Providers.Model model : manual.provider().models) {
@@ -1303,8 +1584,9 @@ public final class MainActivity extends Activity {
                         entry.supportsTools()));
             }
         }
-        ChatContext.ModelSpec selected = ChatContext.route(candidates, message, ChatContext.estimate(history, account, message),
-                ChatContext.estimate(ChatContext.recent(history), account, message), compact, cards);
+        ChatContext.ModelSpec selected = ChatContext.route(candidates, message,
+                ChatContext.estimate(history, account, message) + attachmentCost,
+                ChatContext.estimate(ChatContext.recent(history), account, message) + attachmentCost, compact, tools);
         if (selected != null) for (Providers.Model model : manual.provider().models) {
             if (model.id().equals(selected.id())) return new Providers.Choice(manual.provider(), model);
         }
@@ -1314,25 +1596,32 @@ public final class MainActivity extends Activity {
     private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
                             List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
                             String account, boolean compact, boolean iui, SearchRequest search,
-                            Providers.Provider web, ImageGeneration.Request image) {
+                            Providers.Provider web, ImageGeneration.Request image, LocalChatContext local) {
+        List<ChatFile> attached = local.attached();
+        List<ChatFile> chatFiles = local.recent();
         int level = effort(choice);
         ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
         int inputLimit = entry == null ? 0 : entry.inputLimit();
-        long original = search == null && compact ? ChatContext.estimate(history, account, message) : 0;
-        boolean preparing = compact && original > ChatContext.threshold(inputLimit);
+        int capacity = ChatContext.budget(inputLimit);
+        int reserved = chatFiles.isEmpty() ? 0 : Math.min(ChatAttachments.estimate(chatFiles) + 600,
+                Math.max(ChatAttachments.imageCost(attached) + 600, capacity / 3));
+        boolean preparing = compact && ChatContext.estimate(history, account, message) + reserved > ChatContext.threshold(inputLimit);
         String model = choice.model().title();
-        String scope = choice.provider().id + "\n" + choice.provider().base + "\n" + choice.model().id();
+        String scope = chatScope(choice);
         String waiting = "等待 " + model + " 回复…";
         boolean supportsTools = entry == null || entry.supportsTools();
-        var tools = new ChatTools.Options(supportsTools && web != null, supportsTools && image != null);
+        var tools = new ChatTools.Options(supportsTools && web != null, supportsTools && image != null,
+                supportsTools && local.hasDocuments(), supportsTools && local.memory() && !memory.entries().isEmpty(),
+                supportsTools && local.memory() && fromComposer && !message.isBlank());
         String initial = search != null ? "正在搜索网页…" : preparing ? "正在压缩较早的对话…" : waiting;
-        startReply(message, model, parent, fromComposer, initial, search == null ? null : search.query(), stream -> {
+        String imageScope = ChatAttachments.hasImages(attached) ? scope : "";
+        startReply(message, model, parent, fromComposer, initial, search == null ? null : search.query(), attached, imageScope, stream -> {
             String prompt = message;
             if (search != null) {
                 stream.sources = ModelApi.search(search.provider(), search.query(), stream.cancellation);
                 prompt = WebSearch.groundedPrompt(message, stream.sources);
             }
-            long tokens = search == null ? original : ChatContext.estimate(history, account, prompt);
+            long tokens = ChatContext.estimate(history, account, prompt) + reserved;
             boolean summarize = compact && tokens > ChatContext.threshold(inputLimit);
             if (search != null && !summarize && inputLimit > 0 && tokens > ChatContext.budget(inputLimit)) {
                 throw new IOException("模型的上下文空间不足以容纳聊天和搜索资料，请选择上下文更大的模型。");
@@ -1341,7 +1630,7 @@ public final class MainActivity extends Activity {
             if (summarize) {
                 if (search != null) updateReplyStatus(stream, "正在压缩较早的对话…");
                 try {
-                    context = ChatContext.prepare(history, path, account, prompt, inputLimit, scope, checkpoint,
+                    context = ChatContext.prepare(history, path, account, prompt, inputLimit, scope, checkpoint, reserved,
                             (previous, chunk) -> ModelApi.summarize(choice, previous, chunk, stream.cancellation));
                 } catch (Exception error) {
                     stream.cancellation.check();
@@ -1352,15 +1641,64 @@ public final class MainActivity extends Activity {
             if (search != null || summarize) updateReplyStatus(stream, waiting);
             stream.cancellation.check();
             stream.checkpoint = context.checkpoint();
+            ChatAttachments.Prepared payload = null;
+            if (!chatFiles.isEmpty()) {
+                long room = inputLimit == 0 && !compact ? capacity : capacity
+                        - ChatContext.estimate(context.recent(), account, prompt) - ChatContext.estimate(context.summary())
+                        - ChatAttachments.imageCost(chatFiles) - 600;
+                if (inputLimit > 0 && room < 256 && !attached.isEmpty()) {
+                    throw new IOException("模型的上下文空间不足以发送附件，请选择上下文更大的模型。");
+                }
+                payload = ChatAttachments.prepare(context.recent(), prompt, attached, files::read,
+                        choice.provider().anthropicMessages(), (int) Math.max(0, room), local.imageScope(), stream.cancellation);
+            }
+            ChatReferences references = new ChatReferences(local.documents(), local.library(), file -> {
+                if (local.documents().contains(file)) return files.text(file);
+                if (!prefs.getBoolean("chat_file_space", false)) throw new java.io.FileNotFoundException();
+                return files.libraryText(file);
+            }, stream.cancellation);
+            stream.references = references;
             stream.card = ModelApi.chat(choice, context.recent(), prompt, level, account, context.summary(),
-                    iui && supportsTools, tools, (name, argument) -> runChatTool(stream, name, argument, web, image, waiting),
-                    stream.cancellation, stream::append);
+                    iui && supportsTools, tools, (name, argument) -> runChatTool(stream, name, argument, web, image, waiting, references, message),
+                    payload, stream.cancellation, stream::append);
         });
     }
 
+    private static String chatScope(Providers.Choice choice) {
+        return choice.provider().id + "\n" + choice.provider().base + "\n" + choice.model().id();
+    }
+
     private String runChatTool(StreamReply stream, String name, String argument, Providers.Provider web,
-                               ImageGeneration.Request request, String waiting) throws Exception {
-        stream.toolAttempt = true;
+                               ImageGeneration.Request request, String waiting, ChatReferences references, String message) throws Exception {
+        stream.cancellation.check();
+        switch (name) {
+            case ChatTools.FIND_FILE, ChatTools.READ_FILE -> {
+                updateReplyStatus(stream, "正在查找资料…");
+                String result = ChatTools.FIND_FILE.equals(name) ? references.search(argument) : references.read(argument);
+                updateReplyStatus(stream, waiting);
+                return result;
+            }
+            case ChatTools.RECALL -> {
+                var matches = new org.json.JSONArray();
+                if (prefs.getBoolean("chat_memory", false)) {
+                    for (ChatMemory.Entry entry : memory.search(argument)) matches.put(entry.text());
+                }
+                return new org.json.JSONObject().put("reference_data_only", true).put("matches", matches).toString();
+            }
+            case ChatTools.REMEMBER -> {
+                if (!prefs.getBoolean("chat_memory", false)) return "Memory is disabled.";
+                return switch (memory.assess(argument, message)) {
+                    case SAVED -> {
+                        stream.memoryNote = argument;
+                        yield "Accepted for local saving once this reply is complete.";
+                    }
+                    case ALREADY_SAVED -> "This note is already saved.";
+                    case UNSUITABLE -> "This text is not eligible for memory.";
+                    case FULL -> "The local memory store is full.";
+                };
+            }
+        }
+        stream.toolAttempt = ChatTools.external(name);
         if (ChatTools.SEARCH.equals(name)) {
             stream.searching = true;
             updateReplyStatus(stream, "正在搜索网页…");
@@ -1370,6 +1708,7 @@ public final class MainActivity extends Activity {
             updateReplyStatus(stream, waiting);
             return ChatTools.searchResult(hits);
         }
+        if (!ChatTools.IMAGE.equals(name) || request == null) throw new IOException("模型请求了未启用的聊天工具。");
         stream.pendingImageSize = request.size();
         ui.post(() -> renderToolMedia(stream, false));
         byte[] bytes = ImageGeneration.generate(request, argument, stream.cancellation);
@@ -1402,6 +1741,8 @@ public final class MainActivity extends Activity {
         final int parent;
         final boolean fromComposer;
         final String searchQuery;
+        final List<ChatFile> attachments;
+        final String imageScope;
         volatile boolean toolAttempt;
         volatile boolean searching;
         volatile String pendingImageSize;
@@ -1418,12 +1759,17 @@ public final class MainActivity extends Activity {
         volatile ChatCard card;
         volatile GeneratedImage image;
         volatile List<WebSearch.Hit> sources = List.of();
+        volatile ChatReferences references;
+        volatile String memoryNote;
 
-        StreamReply(String model, int parent, boolean fromComposer, String searchQuery) {
+        StreamReply(String model, int parent, boolean fromComposer, String searchQuery, List<ChatFile> attachments,
+                    String imageScope) {
             this.model = model;
             this.parent = parent;
             this.fromComposer = fromComposer;
             this.searchQuery = searchQuery;
+            this.attachments = List.copyOf(attachments);
+            this.imageScope = imageScope;
         }
 
         synchronized boolean publishImage(GeneratedImage result) {
@@ -1467,17 +1813,26 @@ public final class MainActivity extends Activity {
 
     private void startReply(String message, String model, int parent, boolean fromComposer, String status, String searchQuery,
                             ReplySource source) {
-        StreamReply stream = new StreamReply(model, parent, fromComposer, searchQuery);
+        startReply(message, model, parent, fromComposer, status, searchQuery, List.of(), "", source);
+    }
+
+    private void startReply(String message, String model, int parent, boolean fromComposer, String status, String searchQuery,
+                            List<ChatFile> attachments, String imageScope, ReplySource source) {
+        StreamReply stream = new StreamReply(model, parent, fromComposer, searchQuery, attachments, imageScope);
         streamReply = stream;
         sending = true;
         pendingPrompt = message;
-        retryReply = null;
+        clearReplyNotice();
         replyStatus = status;
-        if (fromComposer) draft = "";
+        if (fromComposer) {
+            draft = "";
+            draftFiles = List.of();
+        }
         if (input != null) {
             hideKeyboard();
             if (fromComposer) input.setText("");
             input.setEnabled(false);
+            renderDraftFiles();
             updateSend(sendButton);
         }
         renderMessages();
@@ -1513,8 +1868,14 @@ public final class MainActivity extends Activity {
     }
 
     private void clearReplyNotice() {
+        ReplyRetry previous = retryReply;
         retryReply = null;
         replyStatus = null;
+        if (previous != null) {
+            var ids = new java.util.HashSet<String>();
+            for (ChatFile file : previous.attachments()) ids.add(file.id());
+            removeUnusedFiles(ids);
+        }
     }
 
     private void finishReply(StreamReply stream, ChatHistory.ReplyState outcome, String problem) {
@@ -1524,6 +1885,7 @@ public final class MainActivity extends Activity {
         String reply = stream.snapshot();
         ChatCard card = outcome == ChatHistory.ReplyState.COMPLETE ? stream.card : null;
         GeneratedImage image = stream.image;
+        List<ChatFile> references = stream.references == null ? List.of() : stream.references.citations();
         if (image != null && reply.isBlank()) reply = "已生成图片";
         if (!stream.sources.isEmpty()) {
             reply = reply.isBlank() ? WebSearch.references(stream.sources, true)
@@ -1542,18 +1904,19 @@ public final class MainActivity extends Activity {
         boolean saved = false;
         if (reply.isBlank() && card == null) {
             if (replyStatus == null) replyStatus = "模型没有返回可显示的文本。";
-            if (stream.fromComposer) draft = message;
+            if (stream.fromComposer) restoreDraft(stream, message);
             if (!stream.toolAttempt) {
-                retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer, stream.searchQuery);
+                retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer, stream.searchQuery, stream.attachments);
             }
         } else {
             try {
-                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome, stream.searchQuery, image);
+                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome, stream.searchQuery,
+                        image, stream.attachments, references, stream.imageScope);
                 saved = true;
                 clearReplyNotice();
             }
             catch (IllegalStateException error) {
-                if (stream.fromComposer) draft = message;
+                if (stream.fromComposer) restoreDraft(stream, message);
                 replyStatus = "收到回复，但无法保存本机聊天记录。";
             }
         }
@@ -1562,6 +1925,7 @@ public final class MainActivity extends Activity {
             input.setEnabled(true);
             input.setText(draft);
             input.setSelection(input.length());
+            renderDraftFiles();
             updateSend(sendButton);
             ReplyText current = liveReply;
             if (current != null && saved) {
@@ -1575,9 +1939,25 @@ public final class MainActivity extends Activity {
                 turnAnchors.put(id, liveAnchors);
                 directoryButton.setVisibility(View.VISIBLE);
                 if (card != null) addCard(liveActions, store.active, id);
+                addFileReferences(liveActions, references);
                 messageActions(liveActions, id, liveHasArtifacts);
             } else renderMessages(chatScroll.following);
         }
+        if (saved && outcome == ChatHistory.ReplyState.COMPLETE && stream.memoryNote != null
+                && prefs.getBoolean("chat_memory", false)) {
+            try {
+                if (memory.remember(stream.memoryNote, message) == ChatMemory.Outcome.SAVED) {
+                    if (page.equals(MEMORIES)) render();
+                    notice("已保存一条记忆");
+                }
+            }
+            catch (IllegalStateException error) { notice("无法保存本机记忆"); }
+        }
+    }
+
+    private void restoreDraft(StreamReply stream, String message) {
+        draft = message;
+        draftFiles = stream.attachments;
     }
 
     private void newChat() {
@@ -1586,18 +1966,27 @@ public final class MainActivity extends Activity {
             hideKeyboard();
             try { store.open(null); }
             catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
-            draft = "";
-            clearReplyNotice();
+            discardDraft();
             go(CHAT);
         });
     }
 
     private void confirmLeavingDraft(Runnable action) {
-        if (draft.isBlank()) action.run();
+        if (importingFile) { notice("正在导入文件"); return; }
+        if (draft.isBlank() && draftFiles.isEmpty()) action.run();
         else showDialog(dialogBuilder().setTitle("舍弃当前草稿？")
-                .setMessage("还有尚未发送的输入。")
+                .setMessage(draftFiles.isEmpty() ? "还有尚未发送的输入。" : "尚未发送的附件会随草稿一起舍弃。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("舍弃并继续", (dialog, index) -> action.run()).create(), true);
+    }
+
+    private void discardDraft() {
+        var candidates = new java.util.HashSet<String>();
+        for (ChatFile file : draftFiles) candidates.add(file.id());
+        draft = "";
+        draftFiles = List.of();
+        clearReplyNotice();
+        removeUnusedFiles(candidates);
     }
 
     private void openDrawer() {
@@ -1655,6 +2044,7 @@ public final class MainActivity extends Activity {
         rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         rule(rail);
         String name = profile.displayName();
+        addRow(rail, "资料库", "", R.drawable.ic_file, () -> openFileSpace(false));
         addRow(rail, name, "账户", R.drawable.ic_user, () -> go(ACCOUNT));
         addRow(rail, "设置", "", R.drawable.ic_settings, () -> go(SETTINGS));
         screen.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
@@ -1724,7 +2114,7 @@ public final class MainActivity extends Activity {
         top.addView(time);
         item.addView(top);
         LinearLayout bottom = row();
-        String last = chat.history.turn(chat.history.leaf()).prompt().replace('\n', ' ');
+        String last = chat.history.turn(chat.history.leaf()).promptLabel().replace('\n', ' ');
         TextView preview = text(last, 13, muted, false);
         preview.setMaxLines(1);
         preview.setEllipsize(TextUtils.TruncateAt.END);
@@ -1754,8 +2144,7 @@ public final class MainActivity extends Activity {
             try { store.open(chat); }
             catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
             hideKeyboard();
-            draft = "";
-            clearReplyNotice();
+            discardDraft();
             go(CHAT);
             if (id >= 0) jumpTo(chat, id, answer);
         });
@@ -1782,9 +2171,9 @@ public final class MainActivity extends Activity {
             try { store.archive(chat, archive); }
             catch (IllegalStateException error) { notice("无法更新本机会话"); return; }
             if (closeActive) {
-                draft = "";
+                discardDraft();
                 input.setText("");
-                clearReplyNotice();
+                renderDraftFiles();
                 renderMessages();
             }
             renderHistory(history);
@@ -1807,24 +2196,27 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmDeleteChat(LinearLayout history, ChatStore.Chat chat) {
-        if (sending && store.active == chat) { notice("请先停止生成"); return; }
+        if ((sending || importingFile) && store.active == chat) { notice("请等待当前操作完成"); return; }
         AlertDialog dialog = dialogBuilder().setTitle("删除会话？")
                 .setMessage("「" + preview(chat.title, 45) + "」及其全部消息版本将从本机删除，无法撤销。")
                 .setNegativeButton("取消", null).setPositiveButton("删除", (d, index) -> {
                     boolean current = store.active == chat;
-                    if (current && sending) { notice("请先停止生成"); return; }
+                    if (current && (sending || importingFile)) { notice("请等待当前操作完成"); return; }
                     var candidates = new java.util.HashSet<String>();
+                    var fileIds = new java.util.HashSet<String>();
                     chat.history.collectImageIds(candidates);
+                    chat.history.collectFileIds(fileIds);
                     try { store.delete(chat); }
                     catch (IllegalStateException error) { notice("无法删除本机会话"); return; }
                     candidates.removeAll(imageReferences());
                     if (!candidates.isEmpty()) localWork.execute(() -> candidates.forEach(images::remove));
                     if (current) {
-                        draft = "";
+                        discardDraft();
                         input.setText("");
-                        clearReplyNotice();
+                        renderDraftFiles();
                         renderMessages();
                     }
+                    removeUnusedFiles(fileIds);
                     renderHistory(history);
                 }).create();
         showDialog(dialog, true);
@@ -1849,11 +2241,14 @@ public final class MainActivity extends Activity {
 
     private void navigateBack() {
         if (drawer != null) closeDrawer();
-        else if (page.equals(SETTINGS) || page.equals(ACCOUNT) || page.equals(SEARCH)) {
+        else if (page.equals(SETTINGS) || page.equals(ACCOUNT) || page.equals(SEARCH) || page.equals(FILE_SPACE)) {
             hideKeyboard();
+            boolean reopenDrawer = !page.equals(FILE_SPACE) || !fileSpaceFromComposer;
             go(CHAT);
-            openDrawer();
+            if (reopenDrawer) openDrawer();
         } else if (page.equals("provider")) go("providers");
+        else if (page.equals(MEMORIES)) go("plugins");
+        else if (page.equals(APP_UPDATE)) go("about");
         else if (!page.equals(CHAT)) go(SETTINGS);
     }
 
@@ -1879,6 +2274,9 @@ public final class MainActivity extends Activity {
             case SETTINGS -> "设置";
             case ACCOUNT -> "账户";
             case SEARCH -> "搜索会话";
+            case FILE_SPACE -> "资料库";
+            case MEMORIES -> "记忆库";
+            case APP_UPDATE -> "应用更新";
             case "provider" -> providers.get(providerPage).label;
             default -> findSection(page).title();
         };
@@ -1904,6 +2302,13 @@ public final class MainActivity extends Activity {
         switch (page) {
             case SETTINGS -> settings(body);
             case ACCOUNT -> account(body);
+            case FILE_SPACE -> fileSpacePage(body);
+            case MEMORIES -> memoryPage(body);
+            case APP_UPDATE -> {
+                scroll.setFillViewport(true);
+                updateBody = body;
+                onAppUpdate(appUpdate.current());
+            }
             case "appearance" -> appearance(body);
             case "providers" -> providerList(body);
             case "provider" -> providerDetails(body, providers.get(providerPage));
@@ -1914,15 +2319,12 @@ public final class MainActivity extends Activity {
                 body.addView(text("Serein", 24, ink, true));
                 body.addView(text("Alpha " + appVersionName().replaceFirst("-alpha$", "") + " · Android 13+", 14, muted, false));
                 space(body, 12);
-                addRow(body, "检查应用更新", "GitHub Releases", R.drawable.ic_refresh, this::checkAppUpdate);
-                if (SereinUpdates.apk(this).isFile()) {
-                    addRow(body, "安装已下载更新", "", R.drawable.ic_file, this::installUpdate);
-                }
+                addRow(body, "应用更新", "GitHub Releases", R.drawable.ic_refresh, this::openAppUpdate);
                 addRow(body, "热更新模型目录", "立即应用到模型选择和识别", R.drawable.ic_cpu, this::refreshModelCatalog);
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话、生成图片、账户资料及服务商配置在本机加密保存。在线聊天内容通过 HTTPS 发给当前服务商。开启聊天搜索后，模型生成的检索词会发给 DeepSeek，结果摘要回传聊天模型。通过 Bing 打开时，浏览器会向 Bing 发送检索词。开启聊天生图后，模型生成的图像描述会发给所选图片服务商。通过系统文件选择器导出的文件不受应用内加密保护。交互卡片选择不会随历史自动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
+            case "policy" -> body.addView(text("会话、附件、资料库、记忆、生成图片、账户资料及服务商配置在本机加密保存。在线聊天通过 HTTPS 发给当前服务商，包含发送的图片和近期的附件摘录。开启资料库或记忆检索后，命中的内容也会发送给聊天服务商。移除本机资料或清空记忆无法撤回已发送的内容。\n\n开启聊天搜索后，模型生成的检索词会发给 DeepSeek，结果摘要回传聊天模型。通过 Bing 打开时，浏览器会向 Bing 发送检索词。开启聊天生图后，模型生成的图像描述会发给所选图片服务商。通过系统文件选择器导出的文件不受应用内加密保护。交互卡片选择不会随历史自动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
@@ -1938,44 +2340,195 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void checkAppUpdate() {
-        if (!beginUpdate("正在检查应用更新…")) return;
-        worker.execute(() -> {
-            try {
-                SereinUpdates.Release release = SereinUpdates.latest(this);
-                finishUpdate(() -> {
-                    if (release == null) { notice("没有可安装的更新版本"); return; }
-                    showDialog(dialogBuilder().setTitle("发现 Alpha " + release.version())
-                            .setMessage("下载后校验 APK，由 Android 系统确认安装。")
-                            .setNegativeButton("取消", null).setPositiveButton("下载", (d, i) -> downloadUpdate(release))
-                            .create(), false);
-                });
-            } catch (Exception error) { finishUpdate(() -> notice("无法检查 GitHub 应用更新，请稍后重试")); }
-        });
+    private void openAppUpdate() {
+        go(APP_UPDATE);
+        if (appUpdate.current().phase() == AppUpdate.Phase.IDLE) appUpdate.check();
     }
 
-    private void downloadUpdate(SereinUpdates.Release release) {
-        if (!beginUpdate("正在下载并校验 APK…")) return;
-        worker.execute(() -> {
-            try {
-                SereinUpdates.download(this, release);
-                finishUpdate(() -> {
-                    if (page.equals("about")) render();
-                    if (sending) notice("更新已下载，可在关于页安装");
-                    else installUpdate();
-                });
-            } catch (Exception error) { finishUpdate(() -> notice(updateError(error, "下载或校验 APK 失败"))); }
-        });
+    private void fileSpacePage(LinearLayout body) {
+        var entries = files.library();
+        var access = settingSwitch(body, "允许模型检索资料库", prefs.getBoolean("chat_file_space", false));
+        access.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("chat_file_space", checked).apply());
+        body.addView(text("命中的资料摘录会发送给当前聊天服务商。", 13, muted, false));
+        space(body, 12);
+        var add = action(importingFile ? "正在导入…" : "导入文件", R.drawable.ic_plus, 0, onAccent, accent);
+        add.setEnabled(!importingFile);
+        add.setOnClickListener(v -> pickFile(true));
+        body.addView(add, new LinearLayout.LayoutParams(WRAP, WRAP));
+        space(body, 18);
+        if (entries.isEmpty()) {
+            body.addView(text("暂无资料", 16, ink, true));
+            body.addView(text("文本、CSV、JSON、DOCX · 单文件最多 5 MiB", 13, muted, false));
+            return;
+        }
+        sectionTitle(body, "本机资料 · " + entries.size());
+        for (ChatFile file : entries) {
+            LinearLayout item = row();
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout label = column();
+            addRow(label, file.name(), fileSize(file), R.drawable.ic_file, () -> previewFile(file, true));
+            item.addView(label, new LinearLayout.LayoutParams(0, WRAP, 1));
+            item.addView(iconButton("资料选项 · " + file.name(), R.drawable.ic_more, muted, 0,
+                    () -> fileOptions(file)));
+            body.addView(item, new LinearLayout.LayoutParams(MATCH, WRAP));
+        }
+    }
+
+    private void fileOptions(ChatFile file) {
+        List<MenuItem> items = new ArrayList<>();
+        if (!sending && !importingFile) {
+            items.add(new MenuItem("附加到聊天", () -> importFile(false, () -> files.copyToChat(file), true)));
+        }
+        items.add(new MenuItem("从资料库移除", () -> showDialog(dialogBuilder().setTitle("移除资料？")
+                .setMessage(file.name() + "\n\n已发送的聊天附件和回复会保留。")
+                .setNegativeButton("取消", null).setPositiveButton("移除", (dialog, index) -> {
+                    localWork.execute(() -> {
+                        boolean removed;
+                        try { files.removeLibrary(file); removed = true; }
+                        catch (RuntimeException error) { removed = false; }
+                        boolean success = removed;
+                        ui.post(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            if (page.equals(FILE_SPACE)) render();
+                            if (!success) notice("无法移除本机资料");
+                        });
+                    });
+                }).create(), true)));
+        showMenu(file.name(), items);
+    }
+
+    private void memoryPage(LinearLayout body) {
+        var access = settingSwitch(body, "主动记忆", prefs.getBoolean("chat_memory", false));
+        access.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("chat_memory", checked).apply());
+        body.addView(text("命中的记忆会发送给当前聊天服务商。", 13, muted, false));
+        space(body, 18);
+        List<ChatMemory.Entry> entries = memory.entries();
+        if (entries.isEmpty()) {
+            body.addView(text("暂无记忆", 16, ink, true));
+            return;
+        }
+        sectionTitle(body, "本机记忆 · " + entries.size());
+        DateFormat date = DateFormat.getDateInstance(DateFormat.MEDIUM);
+        for (ChatMemory.Entry entry : entries) {
+            TextView note = text(entry.text(), 15, ink, false);
+            note.setTextIsSelectable(true);
+            body.addView(note);
+            body.addView(text(date.format(new java.util.Date(entry.savedAt())), 12, muted, false));
+            rule(body);
+        }
+        var clear = action("清空记忆", R.drawable.ic_close, 0, ink, tint);
+        clear.setOnClickListener(v -> showDialog(dialogBuilder().setTitle("清空本机记忆？")
+                .setMessage("这会删除模型保存的全部记忆。")
+                .setNegativeButton("取消", null).setPositiveButton("清空", (dialog, index) -> {
+                    if (sending) { notice("请先停止当前生成"); return; }
+                    try { memory.clear(); render(); }
+                    catch (RuntimeException error) { notice("无法清空本机记忆"); }
+                }).create(), true));
+        body.addView(clear, new LinearLayout.LayoutParams(WRAP, WRAP));
+    }
+
+    private void onAppUpdate(AppUpdate.State state) {
+        if (updateBody == null || isFinishing() || isDestroyed()) return;
+        AppUpdate.Phase phase = state.phase();
+        if (phase == AppUpdate.Phase.DOWNLOADING && visibleUpdatePhase == phase) {
+            updateRing.setProgressCompat(state.percent(), motionEnabled());
+            updateBytes.setText(updateDownloadLabel(state));
+            return;
+        }
+        boolean animate = visibleUpdatePhase != null && motionEnabled();
+        visibleUpdatePhase = phase;
+        updateBody.removeAllViews();
+        updateBody.setGravity(Gravity.CENTER);
+        updateRing = null;
+        updateBytes = null;
+        var content = column();
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+        updateBody.addView(content, new LinearLayout.LayoutParams(MATCH, WRAP));
+
+        var badge = new FrameLayout(this);
+        content.addView(badge, new LinearLayout.LayoutParams(dp(104), dp(104)));
+        var mark = logo(54);
+        badge.addView(mark, new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER));
+        if (phase == AppUpdate.Phase.DOWNLOADING || state.busy() && motionEnabled()) {
+            updateRing = new CircularProgressIndicator(controls);
+            updateRing.setIndicatorSize(dp(88));
+            updateRing.setTrackThickness(dp(5));
+            updateRing.setTrackCornerRadius(dp(2));
+            updateRing.setIndicatorColor(controlAccent());
+            updateRing.setTrackColor(line);
+            updateRing.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            updateRing.setIndeterminate(phase != AppUpdate.Phase.DOWNLOADING);
+            if (phase == AppUpdate.Phase.DOWNLOADING) updateRing.setProgressCompat(state.percent(), false);
+            badge.addView(updateRing, new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER));
+        }
+
+        String heading = switch (phase) {
+            case IDLE, CHECKING -> "正在检查更新…";
+            case CURRENT -> "已是最新版本";
+            case AVAILABLE -> "发现新版本";
+            case DOWNLOADING -> "正在下载更新…";
+            case VERIFYING -> "正在校验更新包…";
+            case READY -> "更新已就绪";
+            case INSTALLER -> "等待 Android 安装确认…";
+            case ERROR -> "更新未完成";
+        };
+        space(content, 16);
+        TextView headline = centeredUpdateText(content, heading, 23, ink, true);
+        headline.setAccessibilityHeading(true);
+        headline.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        space(content, 7);
+        String version = "Alpha " + appVersionName().replaceFirst("-alpha$", "");
+        if (state.version() != null) version += " → " + state.version().replaceFirst("-alpha$", "");
+        centeredUpdateText(content, version, 14, muted, false);
+        if (phase == AppUpdate.Phase.DOWNLOADING) {
+            space(content, 7);
+            updateBytes = centeredUpdateText(content, updateDownloadLabel(state), 14, ink, false);
+        } else if (phase == AppUpdate.Phase.AVAILABLE) {
+            space(content, 7);
+            centeredUpdateText(content, android.text.format.Formatter.formatShortFileSize(this, state.release().bytes()),
+                    14, muted, false);
+        }
+        if (state.error() != null) {
+            space(content, 12);
+            centeredUpdateText(content, state.error(), 14, ink, false);
+        }
+        switch (phase) {
+            case CURRENT -> updateButton(content, "重新检查", R.drawable.ic_refresh, appUpdate::check);
+            case AVAILABLE -> updateButton(content, "开始更新", R.drawable.ic_refresh, appUpdate::start);
+            case READY -> updateButton(content, "安装更新", R.drawable.ic_check, this::installUpdate);
+            case ERROR -> updateButton(content, "重试", R.drawable.ic_refresh,
+                    state.release() == null ? appUpdate::check : appUpdate::start);
+        }
+        Motion.enter(content, 0, dp(6), .988f, animate);
+    }
+
+    private TextView centeredUpdateText(LinearLayout parent, String value, int size, int color, boolean bold) {
+        TextView label = text(value, size, color, bold);
+        label.setGravity(Gravity.CENTER);
+        parent.addView(label, new LinearLayout.LayoutParams(MATCH, WRAP));
+        return label;
+    }
+
+    private String updateDownloadLabel(AppUpdate.State state) {
+        return state.percent() + "% · " + android.text.format.Formatter.formatShortFileSize(this, state.received())
+                + " / " + android.text.format.Formatter.formatShortFileSize(this, state.release().bytes());
+    }
+
+    private void updateButton(LinearLayout parent, String label, int icon, Runnable tap) {
+        space(parent, 20);
+        var button = action(label, icon, 0, onAccent, accent);
+        button.setOnClickListener(v -> tap.run());
+        parent.addView(button, new LinearLayout.LayoutParams(WRAP, WRAP));
     }
 
     private void installUpdate() {
-        if (updateRunning || sending) { notice("请等待当前操作完成"); return; }
-        var apk = SereinUpdates.apk(this);
-        try { SereinUpdates.verifyApk(this, apk); }
-        catch (Exception error) { notice(updateError(error, "无法验证已下载的更新")); return; }
+        if (appUpdate.current().phase() != AppUpdate.Phase.READY || sending || importingFile) {
+            notice("请等待当前操作完成");
+            return;
+        }
         if (!getPackageManager().canRequestPackageInstalls()) {
             showDialog(dialogBuilder().setTitle("允许 Serein 发起安装？")
-                    .setMessage("在 Android 设置中允许后，返回此页点「安装已下载更新」。")
+                    .setMessage("在 Android 设置中允许后，返回此页点「安装更新」。")
                     .setNegativeButton("取消", null).setPositiveButton("打开设置", (d, i) -> {
                         try {
                             startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -1984,11 +2537,17 @@ public final class MainActivity extends Activity {
                     }).create(), false);
             return;
         }
+        appUpdate.verifyForInstall(this::openUpdateInstaller);
+    }
+
+    private void openUpdateInstaller() {
+        if (isFinishing() || isDestroyed() || !hasWindowFocus() || !page.equals(APP_UPDATE) || sending || importingFile) return;
         try {
-            var uri = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".updates", apk);
-            startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
-        } catch (Exception error) { notice(updateError(error, "无法打开系统安装程序")); }
+            var uri = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".updates", SereinUpdates.apk(this));
+            startActivityForResult(new Intent(Intent.ACTION_INSTALL_PACKAGE).setData(uri)
+                    .putExtra(Intent.EXTRA_RETURN_RESULT, true).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), INSTALL_UPDATE);
+            appUpdate.handOff();
+        } catch (RuntimeException error) { appUpdate.installationFailed("无法打开 Android 安装程序。"); }
     }
 
     private void refreshModelCatalog() {
@@ -2018,11 +2577,6 @@ public final class MainActivity extends Activity {
             updateRunning = false;
             if (!isDestroyed() && !isFinishing()) completion.run();
         });
-    }
-
-    private static String updateError(Exception error, String fallback) {
-        String message = error.getMessage();
-        return error instanceof IOException && message != null && message.startsWith("APK") ? message : fallback;
     }
 
     private void renderHistorySearch() {
@@ -2550,7 +3104,8 @@ public final class MainActivity extends Activity {
         if (error instanceof java.net.UnknownHostException) return "无法找到服务商地址。";
         if (error instanceof IOException && error.getMessage() != null &&
                 (error.getMessage().startsWith("服务商") || error.getMessage().startsWith("模型")
-                        || error.getMessage().startsWith("DeepSeek 搜索") || error.getMessage().startsWith("生图"))) return error.getMessage();
+                        || error.getMessage().startsWith("DeepSeek 搜索") || error.getMessage().startsWith("生图")
+                        || error.getMessage().startsWith("附件"))) return error.getMessage();
         return "请求失败，请检查连接与模型 ID。";
     }
 
@@ -2714,6 +3269,9 @@ public final class MainActivity extends Activity {
         var configure = action("图片服务商", R.drawable.ic_image, 0, ink, tint);
         configure.setOnClickListener(v -> configureImageTool());
         body.addView(configure, new LinearLayout.LayoutParams(WRAP, WRAP));
+        rule(body);
+        addRow(body, "记忆库", prefs.getBoolean("chat_memory", false) ? "主动记忆已开启" : "主动记忆已关闭",
+                R.drawable.ic_archive, () -> go(MEMORIES));
         rule(body);
         sectionTitle(body, "对话增强");
         MaterialSwitch compact = settingSwitch(body, "自动压缩上下文", prefs.getBoolean("auto_compact", false));
@@ -3070,12 +3628,26 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == INSTALL_UPDATE) {
+            if (appUpdate != null) appUpdate.installerReturned();
+            if (result != RESULT_OK) notice("安装未完成，可重新安装");
+            return;
+        }
         if (request == CREATE_EXPORT) {
             finishExport(result, data);
             return;
         }
         if (request == CREATE_IMAGE_EXPORT) {
             finishImageExport(result, data);
+            return;
+        }
+        if (request == PICK_ATTACHMENT || request == PICK_LIBRARY_FILE) {
+            if (result == RESULT_OK && data != null && data.getData() != null) {
+                var source = data.getData();
+                if (!"content".equals(source.getScheme())) { notice("无法读取所选文件"); return; }
+                boolean library = request == PICK_LIBRARY_FILE;
+                importFile(library, () -> files.importFile(getApplicationContext(), source, library), false);
+            }
             return;
         }
         if ((request != PICK_BACKGROUND && request != PICK_CHAT_FONT) || result != RESULT_OK

@@ -14,6 +14,7 @@ dependencies {
         chatCheckRuntime markdown
     }
     chatCheckRuntime 'com.vaadin.external.google:android-json:0.0.20131108.vaadin1'
+    chatCheckRuntime 'net.sf.kxml:kxml2:2.3.0'
 }
 
 def releaseKey = providers.environmentVariable('SEREIN_RELEASE_KEYSTORE')
@@ -28,8 +29,8 @@ android {
         applicationId 'app.serein.chat'
         minSdk 33
         targetSdk 36
-        versionCode 16
-        versionName '0.0.16-alpha'
+        versionCode 17
+        versionName '0.0.17-alpha'
     }
 
     compileOptions {
@@ -63,7 +64,7 @@ def chatChecksClasses = tasks.register('compileChatChecks', JavaCompile) {
     options.encoding = 'UTF-8'
 }
 def chatChecks = tasks.register('chatChecks')
-['ModelApiStreamCheck', 'ChatFeatureCheck', 'IuiCheck', 'AstraPortCheck', 'DrawerSwipeCheck', 'AppearanceCheck', 'WebSearchCheck', 'UpdateImageCheck', 'ChatToolsCheck'].each { check ->
+['ModelApiStreamCheck', 'ChatFeatureCheck', 'IuiCheck', 'AstraPortCheck', 'DrawerSwipeCheck', 'AppearanceCheck', 'WebSearchCheck', 'UpdateImageCheck', 'ChatToolsCheck', 'ChatLocalContextCheck'].each { check ->
     def runCheck = tasks.register("run${check}", JavaExec) {
         dependsOn chatChecksClasses
         classpath = files(chatChecksClasses.flatMap { it.destinationDirectory }, chatChecksClasses.map { it.classpath })

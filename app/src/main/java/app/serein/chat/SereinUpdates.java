@@ -12,10 +12,13 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
@@ -31,6 +34,11 @@ final class SereinUpdates {
     private static final Pattern VERSION = Pattern.compile("v?(\\d{1,4})\\.(\\d{1,4})\\.(\\d{1,4})(?:-alpha)?");
 
     record Release(String version, URI asset, long bytes, String sha256) {}
+
+    interface Progress {
+        void downloaded(long bytes);
+        void verifying();
+    }
 
     static Release latest(Context context) throws Exception {
         PackageInfo installed = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
@@ -59,7 +67,7 @@ final class SereinUpdates {
                         || !asset.toString().equals(row.optString("browser_download_url"))) continue;
                 long bytes = row.optLong("size");
                 String hash = row.optString("digest");
-                if (bytes <= 0 || bytes >= APK_LIMIT || !hash.matches("sha256:[0-9a-f]{64}")) continue;
+                if (!hash.startsWith("sha256:") || !validDigest(bytes, hash.substring(7))) continue;
                 highest = order;
                 candidate = new Release(name, asset, bytes, hash.substring(7));
                 break;
@@ -78,36 +86,110 @@ final class SereinUpdates {
 
     static File apk(Context context) { return new File(context.getCacheDir(), "updates/Serein.apk"); }
 
-    static File download(Context context, Release release) throws Exception {
+    static void download(Context context, Release release, ModelApi.Cancellation cancellation, Progress progress) throws Exception {
         File target = apk(context);
         File parent = target.getParentFile();
         if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("无法创建更新缓存。");
         File temporary = File.createTempFile("download-", ".apk", parent);
         try {
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            cancellation.check();
             HttpsURLConnection connection = downloadConnection(release.asset());
-            try (var input = connection.getInputStream(); var output = Files.newOutputStream(temporary.toPath())) {
-                long total = 0;
-                byte[] buffer = new byte[32 * 1024];
-                for (int count; (count = input.read(buffer)) >= 0;) {
-                    if (Thread.currentThread().isInterrupted()) throw new IOException("更新下载已取消。");
-                    total += count;
-                    if (total > release.bytes()) throw new IOException("APK 大小与发布信息不一致。");
-                    output.write(buffer, 0, count);
-                    sha.update(buffer, 0, count);
+            try {
+                cancellation.attach(connection);
+                try (var input = connection.getInputStream(); var output = Files.newOutputStream(temporary.toPath())) {
+                    copyVerified(input, output, release, cancellation, progress);
                 }
-                if (total != release.bytes() || !release.sha256().equals(hex(sha.digest()))) {
-                    throw new IOException("APK 校验失败。");
-                }
-            } finally { connection.disconnect(); }
+            } finally {
+                cancellation.detach();
+                connection.disconnect();
+            }
             PackageInfo verified = verifyApk(context, temporary);
-            if (version(verified.versionName) != version(release.version())
-                    || (verified.applicationInfo != null && verified.applicationInfo.minSdkVersion > android.os.Build.VERSION.SDK_INT)) {
+            if (version(verified.versionName) != version(release.version())) {
                 throw new IOException("APK 版本与发布标签或系统版本不匹配。");
             }
+            cancellation.check();
             Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            return target;
+            saveReceipt(context, release);
         } finally { Files.deleteIfExists(temporary.toPath()); }
+    }
+
+    private static AtomicFile receipt(Context context) {
+        return new AtomicFile(new File(context.getCacheDir(), "app-update-receipt.json"));
+    }
+
+    private static void saveReceipt(Context context, Release release) throws JSONException, IOException {
+        var metadata = new JSONObject().put("version", release.version()).put("bytes", release.bytes())
+                .put("sha256", release.sha256()).toString().getBytes(StandardCharsets.UTF_8);
+        var receipt = receipt(context);
+        var output = receipt.startWrite();
+        try {
+            output.write(metadata);
+            receipt.finishWrite(output);
+        } catch (IOException | RuntimeException error) {
+            receipt.failWrite(output);
+            throw error;
+        }
+    }
+
+    static PackageInfo verifyCachedApk(Context context) throws Exception {
+        File apk = apk(context);
+        if (!apk.isFile()) throw new IOException("APK 缓存已移除，请重新下载。");
+        JSONObject metadata;
+        try (var input = receipt(context).openRead()) {
+            byte[] raw = input.readNBytes(1025);
+            if (raw.length > 1024) throw new IOException("APK 校验记录无效。");
+            metadata = new JSONObject(new String(raw, StandardCharsets.UTF_8));
+        }
+        verifyCachedBytes(apk, metadata.getLong("bytes"), metadata.getString("sha256"));
+        PackageInfo verified = verifyApk(context, apk);
+        long expectedVersion = version(metadata.getString("version"));
+        if (expectedVersion < 0 || version(verified.versionName) != expectedVersion) {
+            throw new IOException("APK 缓存版本与下载记录不匹配。");
+        }
+        return verified;
+    }
+
+    static void verifyCachedBytes(File apk, long bytes, String sha256) throws Exception {
+        if (!validDigest(bytes, sha256) || apk.length() != bytes) throw new IOException("APK 缓存大小或校验记录无效。");
+        var digest = MessageDigest.getInstance("SHA-256");
+        try (var input = new DigestInputStream(Files.newInputStream(apk.toPath()), digest)) {
+            byte[] buffer = new byte[32 * 1024];
+            long total = 0;
+            for (int count; (count = input.read(buffer)) != -1;) {
+                total += count;
+                if (total > bytes) throw new IOException("APK 缓存大小与下载记录不一致。");
+            }
+            if (total != bytes || !sha256.equals(hex(digest.digest()))) throw new IOException("APK 缓存校验失败。");
+        }
+    }
+
+    private static boolean validDigest(long bytes, String sha256) {
+        return bytes > 0 && bytes < APK_LIMIT && sha256.matches("[0-9a-f]{64}");
+    }
+
+    static void copyVerified(InputStream input, OutputStream output, Release release, ModelApi.Cancellation cancellation,
+                             Progress progress) throws Exception {
+        MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        long total = 0;
+        long lastReport = System.nanoTime();
+        byte[] buffer = new byte[32 * 1024];
+        progress.downloaded(0);
+        cancellation.check();
+        for (int count; (count = input.read(buffer)) != -1;) {
+            cancellation.check();
+            total += count;
+            if (total > release.bytes()) throw new IOException("APK 大小与发布信息不一致。");
+            output.write(buffer, 0, count);
+            sha.update(buffer, 0, count);
+            long now = System.nanoTime();
+            if (total == release.bytes() || now - lastReport >= 100_000_000L) {
+                progress.downloaded(total);
+                lastReport = now;
+            }
+        }
+        cancellation.check();
+        progress.verifying();
+        if (total != release.bytes() || !release.sha256().equals(hex(sha.digest()))) throw new IOException("APK 校验失败。");
     }
 
     static PackageInfo verifyApk(Context context, File apk) throws Exception {
@@ -124,6 +206,9 @@ final class SereinUpdates {
         if (current == null || incoming == null || current.length == 0
                 || !new HashSet<>(Arrays.asList(current)).equals(new HashSet<>(Arrays.asList(incoming)))) {
             throw new IOException("APK 签名与当前安装版本不同。");
+        }
+        if (next.applicationInfo == null || next.applicationInfo.minSdkVersion > android.os.Build.VERSION.SDK_INT) {
+            throw new IOException("APK 与当前系统版本不兼容。");
         }
         return next;
     }

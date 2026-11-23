@@ -26,7 +26,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ## 项目路线图
 
-路线图依据 Android 聊天产品的官方帮助资料及当前 Alpha 的代码与测试状态滚动修订。竞品只用于核对用户已经熟悉的聊天交互，不作为功能清单：Gemini Android 支持会话搜索、置顶、重命名和删除；ChatGPT Android 支持会话历史及按消息提供复制、反馈、朗读、分享和重试等操作。Serein 先实现与本地单用户聊天直接相关的会话整理和消息编辑/重试；账号同步、协作、文件空间与自主工具执行不在产品边界内。来源：[Gemini 聊天管理](https://support.google.com/gemini/answer/13666746?co=GENIE.Platform%3DAndroid&hl=en)、[ChatGPT Android FAQ](https://help.openai.com/en/articles/8142208-chatgpt-ios-and-android-app-faq)。
+路线图依据 Android 聊天产品的官方帮助资料及当前 Alpha 的代码与测试状态滚动修订。Gemini Android 支持会话搜索、置顶、重命名和删除。ChatGPT Android 支持会话历史及按消息提供复制、反馈、朗读、分享和重试等操作。Serein 优先实现本机聊天管理、消息编辑和重试。资料库仅为用户主动发起的聊天提供参考资料。[Gemini 聊天管理](https://support.google.com/gemini/answer/13666746?co=GENIE.Platform%3DAndroid&hl=en) · [ChatGPT Android FAQ](https://help.openai.com/en/articles/8142208-chatgpt-ios-and-android-app-faq)
 
 | 阶段 | 目标 | 验收条件 | 取舍 |
 | --- | --- | --- | --- |
@@ -41,17 +41,22 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.14 | 在对话中查询网页 | 单条消息可用 DeepSeek Search，并保留可点击来源；也可在浏览器打开 Bing | 每次由用户确认检索词 |
 | Alpha 0.0.15 | 在应用内更新和生图 | 关于页检查 GitHub APK 与模型目录；对话中生成、预览和保存图片 | 安装交由 Android 确认；生图由用户逐次提交 |
 | Alpha 0.0.16 | 简化搜索与生图 | 普通发送后，由模型按需选择已启用的聊天工具；生图在回复内显示占位和结果 | 默认关闭；每条消息最多执行一次工具，不自动重试 |
+| Alpha 0.0.17 | 在对话中使用附件、资料与记忆，独立展示更新进度 | 附件可随消息发送，模型按需检索资料和记忆，资料引用可预览；应用更新页展示下载和校验状态 | 本机加密，资料库检索和主动记忆默认关闭；工具只在当前聊天轮内调用 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.16
+## Alpha 0.0.17
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
-- 「设置 → 关于 → 检查应用更新」读取 GitHub Releases，支持 Alpha 预发行版。下载后校验 SHA-256、包名、版本和当前安装签名，再交给 Android 安装确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
+- 「设置 → 关于 → 应用更新」检查 GitHub Releases，支持 Alpha 预发行版。点「开始更新」进入动画，进度环随实际收到的字节推进。下载完成和安装前都会验证 SHA-256、包名、版本和当前安装签名。最后点「安装更新」交给 Android 确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
 - 「热更新模型目录」从 Serein 仓库校验并应用 JSON 模型目录，成功后无需重启。校验失败时使用已有的可用目录。
+- 点输入框的回形针添加附件，每条消息最多 3 个。文本、Markdown、CSV、TSV、JSON、XML、YAML、日志和 DOCX 单个限 5 MiB、提取的正文限 60,000 个字符。PNG、JPEG 和 WebP 单个限 2 MiB，最长边限 4096 像素，需选择支持图片输入的模型。PDF 和 OCR 暂未接入。
+- 侧栏「资料库」可导入、预览、移除和附加文档。开启「允许模型检索资料库」后，支持函数调用的模型可搜索相关段落并在回复里用 `[F1]` 等标签引用。点回复下方的「资料引用」可查看来源。
+- 「设置 → 自定义插件 → 记忆库」可开启主动记忆、查看条目或清空。模型可从本轮用户原话中选择稳定的事实或偏好，回复完成并保存后写入记忆库。后续聊天可按需检索，条目不可手动编辑。
+- 资料库和记忆加密保存在本机。主动检索默认关闭，首次向某服务商发送附件或允许检索命中内容时确认发送范围。每轮最多执行 4 次本机工具，或执行一次联网搜索或图片生成。调用本机工具后，本轮会关闭搜索和生图。[AstraAgent 附件](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/attachments.py) · [AstraAgent 记忆](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/agent_environment.py)
 - 在「设置 → 自定义插件」分别开启「模型联网搜索」和「模型生成图片」，然后像平常一样发消息。在线聊天模型须支持函数调用；离线演示不会调用工具。每轮最多执行一次搜索或生图，之后由聊天模型继续回复，不会自动重试工具。
 - 搜索只向官方 DeepSeek Search 发送模型填写的检索词，需要官方 DeepSeek 服务商的 API Key；摘要交还聊天模型，来源随回复保存。设置中也可手动打开 Bing 网页，旧的手动搜索记录仍可重新确认检索词。详见 [DeepSeek Search API](https://api-docs.deepseek.com/api/search/)。
 - 生图使用「图片服务商」中指定的模型和尺寸，向 OpenAI 兼容的 `/images/generations` 发送模型填写的图像描述。等待时在回复内显示粒子占位，完成后图片弹簧渐入；遵循应用和系统的减少动效设置。搜索和生图都可能单独计费。图片加密保存在会话中，可点开预览并导出原图。参考 [AstraAgent Chat 工具白名单](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/runtime_engine.py) 与 [生图动效](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/css/ui/image-candidates.css)。
@@ -80,7 +85,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.16.apk
+adb install -r .\outputs\Serein-Alpha-0.0.17.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。

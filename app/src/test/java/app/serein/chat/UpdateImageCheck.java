@@ -11,6 +11,7 @@ import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.HashSet;
@@ -20,6 +21,7 @@ import javax.net.ssl.HttpsURLConnection;
 final class UpdateImageCheck {
     public static void main(String[] args) throws Exception {
         updates();
+        downloadProgress();
         images();
         imageTransport();
         System.out.println("PASS: release ordering and integrity, catalog validation, image protocol and versioned attachments");
@@ -64,6 +66,54 @@ final class UpdateImageCheck {
                 .put("browser_download_url", base + tag + "/" + name);
         if (digest) asset.put("digest", "sha256:" + "a".repeat(64));
         return new JSONObject().put("tag_name", tag).put("prerelease", true).put("assets", new JSONArray().put(asset));
+    }
+
+    private static void downloadProgress() throws Exception {
+        byte[] packageBytes = new byte[80_000];
+        packageBytes[0] = 17;
+        String hash = java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(packageBytes));
+        var release = new SereinUpdates.Release("0.0.17", URI.create("https://github.com"), packageBytes.length, hash);
+        var transferred = new java.util.ArrayList<Long>();
+        var phases = new java.util.ArrayList<String>();
+        var events = new SereinUpdates.Progress() {
+            @Override public void downloaded(long bytes) { transferred.add(bytes); phases.add("download"); }
+            @Override public void verifying() { phases.add("verify"); }
+        };
+        var copied = new ByteArrayOutputStream();
+        SereinUpdates.copyVerified(new ByteArrayInputStream(packageBytes), copied, release, new ModelApi.Cancellation(), events);
+        require(java.util.Arrays.equals(packageBytes, copied.toByteArray()), "download retains exact bytes");
+        require(transferred.get(0) == 0L && transferred.get(transferred.size() - 1) == packageBytes.length
+                && phases.get(phases.size() - 1).equals("verify"), "progress reports real byte counts before verification");
+        for (int i = 1; i < transferred.size(); i++) require(transferred.get(i) >= transferred.get(i - 1), "monotonic progress");
+        byte[] changed = packageBytes.clone();
+        changed[0] = 18;
+        rejectDownload(changed, release, new ModelApi.Cancellation(), events);
+        rejectDownload(java.util.Arrays.copyOf(packageBytes, packageBytes.length - 1), release, new ModelApi.Cancellation(), events);
+        rejectDownload(java.util.Arrays.copyOf(packageBytes, packageBytes.length + 1), release, new ModelApi.Cancellation(), events);
+        var cancelled = new ModelApi.Cancellation();
+        cancelled.cancel();
+        phases.clear();
+        rejectDownload(packageBytes, release, cancelled, events);
+        require(phases.equals(List.of("download")), "cancelled download does not report verification");
+
+        var cached = Files.createTempFile("serein-update-check-", ".apk");
+        try {
+            Files.write(cached, packageBytes);
+            SereinUpdates.verifyCachedBytes(cached.toFile(), release.bytes(), release.sha256());
+            Files.write(cached, changed);
+            try {
+                SereinUpdates.verifyCachedBytes(cached.toFile(), release.bytes(), release.sha256());
+                throw new AssertionError("A modified cache passed installation verification");
+            } catch (IOException expected) {}
+        } finally { Files.deleteIfExists(cached); }
+    }
+
+    private static void rejectDownload(byte[] data, SereinUpdates.Release release, ModelApi.Cancellation cancellation,
+                                       SereinUpdates.Progress events) throws Exception {
+        try {
+            SereinUpdates.copyVerified(new ByteArrayInputStream(data), java.io.OutputStream.nullOutputStream(), release, cancellation, events);
+            throw new AssertionError("Invalid or cancelled download was accepted");
+        } catch (IOException expected) {}
     }
 
     private static void images() throws Exception {
