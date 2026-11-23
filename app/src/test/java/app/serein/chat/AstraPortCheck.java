@@ -15,6 +15,7 @@ final class AstraPortCheck {
         search();
         quote();
         artifacts();
+        oversizedTable();
         markdownExport();
     }
 
@@ -210,6 +211,19 @@ final class AstraPortCheck {
         equal(interrupted.contains("complete();\n~~~\n"), true);
         equal(ChatArtifacts.blocks(interrupted).items().size(), 2);
         System.out.println("PASS: Markdown export snapshots the selected path, separates interrupted code, and excludes private metadata");
+    }
+
+    private static void oversizedTable() throws Exception {
+        String sparseTable = "|Column".repeat(120) + "|\n" + "|---".repeat(120) + "|\n"
+                + "|short row|\n".repeat(300);
+        String reply = sparseTable + "\n```text\nCode after the table.\n```\n\nReply complete.";
+        var blocks = ChatArtifacts.blocks(reply);
+        equal(blocks.items(), List.of(new ChatArtifacts.CodeBlock("text", "Code after the table.\n")));
+        var store = new ChatStore(EMPTY, ignored -> {});
+        store.append(-1, "Table result", reply, "model", null);
+        equal(store.active.history.turn(0).reply(), reply);
+        equal(write(ChatArtifacts.conversation(store.active)).contains(reply), true);
+        System.out.println("PASS: oversized sparse tables skip GFM expansion and full Markdown is preserved");
     }
 
     private static String write(ChatArtifacts.Document document) throws Exception {

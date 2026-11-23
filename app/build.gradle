@@ -9,7 +9,7 @@ configurations {
 dependencies {
     implementation 'com.google.android.material:material:1.13.0'
     ['commonmark', 'commonmark-ext-gfm-strikethrough', 'commonmark-ext-gfm-tables'].each { name ->
-        def markdown = 'org.commonmark:' + name + ':0.24.0'
+        def markdown = 'org.commonmark:' + name + ':0.33.0'
         implementation markdown
         chatCheckRuntime markdown
     }
@@ -29,8 +29,8 @@ android {
         applicationId 'app.serein.chat'
         minSdk 33
         targetSdk 36
-        versionCode 17
-        versionName '0.0.17-alpha'
+        versionCode 18
+        versionName '0.0.18-alpha'
     }
 
     compileOptions {

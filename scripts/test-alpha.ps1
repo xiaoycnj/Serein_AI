@@ -34,9 +34,9 @@ function Get-Screen {
     throw "Could not read a fresh UI snapshot: $receipt"
 }
 
-function Find-Element([xml]$Screen, [string]$Label, [string]$Class) {
+function Find-Element([xml]$Screen, [string]$Label, [string[]]$Classes) {
     foreach ($node in $Screen.SelectNodes('//node')) {
-        if ($node.package -eq $package -and (!$Class -or $node.class -eq $Class) -and
+        if ($node.package -eq $package -and (!$Classes -or $node.class -in $Classes) -and
             ($node.text -eq $Label -or $node.'content-desc' -eq $Label)) {
             return $node
         }
@@ -129,9 +129,9 @@ function Wait-Visible([string]$Label) {
 }
 
 function Tap-Label([string]$Label) {
-    $class = if ($Label -eq '关闭侧栏') { 'android.widget.ImageButton' }
+    $classes = if ($Label -eq '关闭侧栏') { @('android.widget.ImageButton', 'android.widget.Button') }
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
-        $node = Find-Element (Get-Screen) $Label $class
+        $node = Find-Element (Get-Screen) $Label $classes
         if ($node) { Tap-Node $node $Label; return }
         Start-Sleep -Milliseconds 300
     }
@@ -287,13 +287,12 @@ function Test-ProviderControls {
 function Test-AccountControls {
     Tap-Label '账户'
     $screen = Get-Screen
-    $fields = $screen.SelectNodes('//node') | Where-Object {
+    $fields = @($screen.SelectNodes('//node') | Where-Object {
         $_.package -eq $package -and $_.class -eq 'android.widget.EditText'
-    }
-    $nameField = $fields | Where-Object { $_.hint -eq '本机账户' } | Select-Object -First 1
-    $bioField = $fields | Where-Object { $_.hint -eq '个人简介' } | Select-Object -First 1
+    })
+    # UI Automator on Android 13 does not include the hint alongside a saved value.
     $shareNode = Find-Element $screen '随聊天发送账户资料' 'android.widget.Switch'
-    if (!$nameField -or !$bioField -or !$shareNode) { throw 'Account profile controls were not exposed in the UI tree.' }
+    if ($fields.Count -ne 2 -or !$shareNode) { throw 'Account profile controls were not exposed in the UI tree.' }
     Write-Output 'PASS: account controls are available (read-only check)'
     Tap-Label '返回'
 }

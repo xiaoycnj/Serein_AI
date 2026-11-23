@@ -42,13 +42,14 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.15 | 在应用内更新和生图 | 关于页检查 GitHub APK 与模型目录；对话中生成、预览和保存图片 | 安装交由 Android 确认；生图由用户逐次提交 |
 | Alpha 0.0.16 | 简化搜索与生图 | 普通发送后，由模型按需选择已启用的聊天工具；生图在回复内显示占位和结果 | 默认关闭；每条消息最多执行一次工具，不自动重试 |
 | Alpha 0.0.17 | 在对话中使用附件、资料与记忆，独立展示更新进度 | 附件可随消息发送，模型按需检索资料和记忆，资料引用可预览；应用更新页展示下载和校验状态 | 本机加密，资料库检索和主动记忆默认关闭；工具只在当前聊天轮内调用 |
+| Alpha 0.0.18 | 修复大表格导致的聊天卡顿 | 流式回复和历史会话均能打开大表格，原始 Markdown 可复制和导出 | 聊天内仅预览部分表格，超出解析上限时显示原文 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.17
+## Alpha 0.0.18
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 「设置 → 关于 → 应用更新」检查 GitHub Releases，支持 Alpha 预发行版。点「开始更新」进入动画，进度环随实际收到的字节推进。下载完成和安装前都会验证 SHA-256、包名、版本和当前安装签名。最后点「安装更新」交给 Android 确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
@@ -70,7 +71,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 - 在「账户」保存显示名称和简介。资料在本机加密保存，开启「随聊天发送账户资料」后才会放入在线请求的系统提示词。
 - 「设置 → 自定义插件」的聊天扩展默认关闭。自动压缩保留最近四轮和当前提问，将较早的历史分段发给本轮服务商生成摘要，可能产生额外费用。原文仍保存在本机。自动路由在当前服务商已配置的模型中，按提问类型、上下文容量和目录价格选择。实际模型显示在回复旁，手动选模型可退出自动路由。
 - 同处可开启在线「交互卡片」，需要模型及接口支持函数调用。移植了 [AstraAgent 的 IUI](https://github.com/xiaoycnj/AstraAgent/blob/main/docs/INTELLIGENT-UI.md) 子集：说明、指标、对比、清单和单选。不支持表单、图表或执行确认。卡片不加载网页、脚本或网络资源；选择按消息版本加密保存，不会自动发送。「加入草稿」保留原有输入，聊天仍由用户手动发送。在离线演示点击「试试交互清单」可以直接体验。
-- 消息支持原生 Markdown 富文本，包括标题、粗体、斜体、引用、列表、代码、链接和表格。长按可选择文本。图片仅显示替代文字，HTML 以文本显示。
+- 消息支持原生 Markdown 富文本，包括标题、粗体、斜体、引用、列表、代码、链接和表格。聊天内每张表格预览最多 12 行、8 列，包含表头。超出解析上限时保留表格原文。长按可选择文本。图片仅显示替代文字，HTML 以文本显示。
 - SSE 按协议读取正文和结束状态。Markdown 刷新与屏幕帧对齐，向上翻阅时保留当前滚动位置，回到末尾后恢复跟随。停止生成或连接中断时，已收到的正文会存入聊天记录。回复开头前三个可见字符有短暂的模糊渐入，可在「外观 → 减少动效」关闭，也遵循系统动画设置。
 - 在「会话 → 设置 → 服务商连接」填写带 API 路径的 HTTPS 根地址。OpenAI、DeepSeek 和兼容网关沿用 Chat Completions。填写 `https://api.anthropic.com/v1` 会使用官方 Anthropic Messages API，思考强度由模型决定。配置 Key 后可拉取模型列表或手动填写模型 ID，从聊天顶部切换模型。
 - 模型选择器沿用聊天主题，显示品牌图标、当前模型和服务商。搜索可按名称、模型 ID、发布方或服务商筛选。
@@ -85,7 +86,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.17.apk
+adb install -r .\outputs\Serein-Alpha-0.0.18.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
@@ -106,7 +107,7 @@ Serein 的原创代码和资源采用 [MIT 许可证](LICENSE)。第三方资源
 - 侧栏入口采用 [Heroicons v2.2.0（MIT）](https://github.com/tailwindlabs/heroicons/tree/v2.2.0)，手势开关使用 [SVG Repo 的 Swipe Right Gesture（CC0）](https://www.svgrepo.com/svg/325667/swipe-right-gesture)。仅随包分发两个矢量，无运行时依赖。
 - 本地路由的候选能力筛选与档位排序参考 [AutoModelRouter（CC0 1.0）](https://github.com/xiaoycnj/AutoModelRouter/tree/9ba754d02e08bc1069b0f629e2cbcd5981100500)，由应用内的 Java 代码执行。
 - 主题预设、壁纸与排版设置参考 AstraAgent 的 [主题风格](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/js/features/theme-styles.js) 和 [个性化设置](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/js/features/personalization.js)，由 Android 原生界面渲染。
-- Markdown 解析使用 [commonmark-java 0.24.0（BSD 2-Clause）](https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.24.0)。
+- Markdown 解析使用 [commonmark-java 0.33.0（BSD 2-Clause）](https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.33.0)。
 - 通用控件使用 [Material Components for Android 1.13.0（Apache 2.0）](https://github.com/material-components/material-components-android/releases/tag/1.13.0)。
 - 搜索图标来自 [Tabler Icons v3.41.0（MIT）](https://github.com/tabler/tabler-icons/tree/v3.41.0)，设计资源也可通过 [官方 Figma 插件](https://www.figma.com/community/plugin/1169807996149376642/Tabler-Icons) 获取。
 - 模型品牌向量来自 [Lobe Icons（MIT）](https://github.com/lobehub/lobe-icons/tree/9752d967494e48d8f83f2808feb2b0207bf70997)。

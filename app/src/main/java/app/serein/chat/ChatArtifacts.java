@@ -20,8 +20,12 @@ import java.util.Set;
 
 // Chat-only adaptations of AstraAgent rich-chat.js and its Markdown export (MIT).
 final class ChatArtifacts {
+    private static final int MAX_TABLE_CELLS = 8192;
     private static final Parser PARSER = Parser.builder()
-            .extensions(List.of(StrikethroughExtension.create(), TablesExtension.create())).build();
+            .extensions(List.of(StrikethroughExtension.create(), TablesExtension.builder().maxCells(MAX_TABLE_CELLS).build()))
+            .build();
+    private static final Parser WITHOUT_TABLES = Parser.builder()
+            .extensions(List.of(StrikethroughExtension.create())).build();
     private static final int BLOCK_LIMIT = 100;
     private static final Map<String, String> EXTENSIONS = Map.ofEntries(Map.entry("javascript", "js"),
             Map.entry("typescript", "ts"), Map.entry("python", "py"), Map.entry("kotlin", "kt"),
@@ -43,7 +47,14 @@ final class ChatArtifacts {
 
     record Document(String fileName, String mime, Content content) {}
 
-    static Node parse(String markdown) { return PARSER.parse(markdown); }
+    static Node parse(String markdown) {
+        try {
+            return PARSER.parse(markdown);
+        } catch (IllegalArgumentException limit) {
+            // GFM pads short rows to the full header width, even when the source is small.
+            return WITHOUT_TABLES.parse(markdown);
+        }
+    }
 
     static Blocks blocks(String markdown) {
         List<Block> blocks = new ArrayList<>();

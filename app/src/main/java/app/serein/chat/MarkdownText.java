@@ -22,6 +22,9 @@ import org.commonmark.node.*;
 import java.net.URI;
 
 final class MarkdownText {
+    private static final int TABLE_PREVIEW_ROWS = 12;
+    private static final int TABLE_PREVIEW_COLUMNS = 8;
+
     record Rendered(SpannableStringBuilder text, boolean hasArtifacts) {}
 
     static Rendered render(String markdown, int ink, int secondary, int code, int inset) {
@@ -96,20 +99,8 @@ final class MarkdownText {
                 lines(2);
             } else if (node instanceof ListBlock list) {
                 list(list, depth);
-            } else if (node instanceof TableRow) {
-                children(node, depth);
-                lines(node.getParent().getNext() == null && node.getNext() == null ? 2 : 1);
-            } else if (node instanceof TableCell cell) {
-                children(node, depth);
-                if (cell.isHeader()) {
-                    style(new StyleSpan(Typeface.BOLD), start);
-                    style(new BackgroundColorSpan(code), start);
-                }
-                if (node.getNext() != null) {
-                    int divider = text.length();
-                    text.append("  │  ");
-                    style(new ForegroundColorSpan(secondary), divider);
-                }
+            } else if (node instanceof TableBlock) {
+                table(node, depth);
             } else if (node instanceof ThematicBreak) {
                 text.append("──────");
                 style(new ForegroundColorSpan(secondary), start);
@@ -117,6 +108,36 @@ final class MarkdownText {
             } else {
                 children(node, depth);
             }
+        }
+
+        void table(Node table, int depth) {
+            int rows = 0;
+            for (Node section = table.getFirstChild(); section != null; section = section.getNext()) {
+                for (Node row = section.getFirstChild(); row != null; row = row.getNext()) {
+                    if (!(row instanceof TableRow)) continue;
+                    if (rows++ == TABLE_PREVIEW_ROWS) {
+                        text.append('…');
+                        lines(2);
+                        return;
+                    }
+                    int columns = 0;
+                    for (Node cell = row.getFirstChild(); cell instanceof TableCell; cell = cell.getNext()) {
+                        if (columns > 0) text.append("  │  ");
+                        if (columns++ == TABLE_PREVIEW_COLUMNS) {
+                            text.append('…');
+                            break;
+                        }
+                        int start = text.length();
+                        children(cell, depth + 2);
+                        if (((TableCell) cell).isHeader()) {
+                            style(new StyleSpan(Typeface.BOLD), start);
+                            style(new BackgroundColorSpan(code), start);
+                        }
+                    }
+                    lines(1);
+                }
+            }
+            lines(2);
         }
 
         void list(ListBlock list, int depth) {
