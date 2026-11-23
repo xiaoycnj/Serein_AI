@@ -7,7 +7,6 @@ import android.widget.LinearLayout;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 
-import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.checkbox.MaterialCheckBox;
 import com.google.android.material.radiobutton.MaterialRadioButton;
 
@@ -19,12 +18,7 @@ final class IuiView {
 
     static View create(Context context, ChatCard card, Map<String, Object> state, Colors colors,
                        BiPredicate<String, Object> save, Runnable addDraft) {
-        MaterialCardView surface = new MaterialCardView(context);
-        surface.setRadius(UiKit.dp(context, 8));
-        surface.setStrokeWidth(UiKit.dp(context, 1));
-        surface.setStrokeColor(colors.line());
-        surface.setCardElevation(0);
-        surface.setCardBackgroundColor(colors.panel());
+        var surface = UiKit.readingSurface(context, colors.panel(), colors.line());
         LinearLayout body = new LinearLayout(context);
         body.setOrientation(LinearLayout.VERTICAL);
         int inset = UiKit.dp(context, 14);

@@ -19,4 +19,9 @@
     <style name="SereinShape.Medium" parent="ShapeAppearance.Material3.MediumComponent">
         <item name="cornerSize">12dp</item>
     </style>
+
+    <style name="SereinNoMotion" parent="">
+        <item name="motionDurationLong2">0</item>
+        <item name="motionDurationMedium1">0</item>
+    </style>
 </resources>

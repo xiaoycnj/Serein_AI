@@ -1,0 +1,15 @@
+<com.google.android.material.textfield.TextInputLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <com.google.android.material.textfield.MaterialAutoCompleteTextView
+        android:id="@+id/serein_dropdown_value"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="none"
+        android:importantForAutofill="no"
+        android:saveEnabled="false"
+        android:minHeight="54dp"
+        android:textSize="15sp" />
+</com.google.android.material.textfield.TextInputLayout>

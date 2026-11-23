@@ -49,6 +49,8 @@ $apkDir = Join-Path $project "app\build\outputs\apk\$variant"
 $metadata = Get-Content -Raw -LiteralPath (Join-Path $apkDir 'output-metadata.json') | ConvertFrom-Json
 if (@($metadata.elements).Count -ne 1) { throw 'Expected one universal APK.' }
 $apk = Join-Path $apkDir $metadata.elements[0].outputFile
+$size = (Get-Item -LiteralPath $apk).Length
+if ($size -ge 64000000) { throw "APK must be smaller than 64 MB; got $size bytes." }
 & $apksigner verify $apk
 if ($LASTEXITCODE -ne 0) { throw "APK signature check failed (exit $LASTEXITCODE)." }
 $out = Join-Path $project 'outputs'

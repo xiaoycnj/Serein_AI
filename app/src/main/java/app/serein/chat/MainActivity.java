@@ -16,6 +16,7 @@ import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RenderEffect;
+import android.graphics.Rect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -50,38 +51,50 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatDialog;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.progressindicator.LinearProgressIndicator;
+import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.slider.Slider;
 import com.google.android.material.textfield.TextInputEditText;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
     private static final String CHAT = "chat";
     private static final String SETTINGS = "settings";
     private static final String ACCOUNT = "account";
+    private static final String SEARCH = "history-search";
     private static final int MATCH = -1;
     private static final int WRAP = -2;
+    private static final int MESSAGE_LIMIT = 4000;
+    private static final int CREATE_EXPORT = 871;
     private static final String[] REASONING_MODES = {"none", "effort", "deepseek"};
 
     private record Section(String id, String title, String summary, int icon) {}
+    private record TurnAnchors(View prompt, View answer) {}
+    private record MenuItem(String label, Runnable action) {}
 
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
@@ -100,12 +113,23 @@ public final class MainActivity extends Activity {
     private ModelCatalog modelCatalog;
     private String providerPage;
     private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    private final ExecutorService localWork = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout root;
+    private View composerAnchor;
+    private Snackbar activeNotice;
+    private final List<AlertDialog> openDialogs = new ArrayList<>();
     private FrameLayout drawer;
     private LinearLayout screen;
     private View drawerTrigger;
+    private boolean drawerArchived;
+    private Runnable queuedHistorySearch;
+    private Future<?> runningHistorySearch;
+    private int historyQueryGeneration;
     private TranscriptScroll chatScroll;
+    private final LinkedHashMap<Integer, TurnAnchors> turnAnchors = new LinkedHashMap<>();
+    private View directoryButton;
+    private View latestButton;
     private EditText input;
     private View reasoningRow;
     private MaterialButton sendButton;
@@ -116,10 +140,13 @@ public final class MainActivity extends Activity {
     private ReplyRetry retryReply;
     private StreamReply streamReply;
     private ReplyText liveReply;
+    private TurnAnchors liveAnchors;
+    private boolean liveHasArtifacts;
     private TextView liveStatus;
     private LinearLayout liveActions;
     private String liveSource;
     private Bitmap wallpaper;
+    private ChatArtifacts.Document pendingExport;
     private static final int PICK_BACKGROUND = 870;
     private String page = CHAT;
     private String draft = "";
@@ -131,6 +158,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        if (getLastNonConfigurationInstance() instanceof ChatArtifacts.Document document) pendingExport = document;
         prefs = getSharedPreferences("serein", MODE_PRIVATE);
         setRecentsScreenshotEnabled(false);
         vault = new Vault(prefs);
@@ -142,9 +170,9 @@ public final class MainActivity extends Activity {
             modelCatalog = ModelCatalog.load(getAssets());
             providers = new Providers(vault, modelCatalog);
         } catch (RuntimeException error) {
-            dialogBuilder().setTitle("无法读取本机数据")
+            showDialog(dialogBuilder().setTitle("无法读取本机数据")
                     .setMessage("已保留原有文件。请重新启动 Serein 后再试。")
-                    .setPositiveButton("关闭", (dialog, item) -> finish()).setCancelable(false).show();
+                    .setPositiveButton("关闭", (dialog, item) -> finish()).setCancelable(false).create(), true);
             return;
         }
         if (saved != null) {
@@ -177,12 +205,19 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (activeNotice != null) activeNotice.dismiss();
+        for (AlertDialog dialog : List.copyOf(openDialogs)) if (dialog.isShowing()) dialog.dismiss();
+        openDialogs.clear();
         if (streamReply != null) cancelStream(streamReply);
+        cancelHistorySearch();
         ui.removeCallbacksAndMessages(null);
         worker.shutdownNow();
+        localWork.shutdown();
         if (backRegistered) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         super.onDestroy();
     }
+
+    @Override public Object onRetainNonConfigurationInstance() { return pendingExport; }
 
     private void palette() {
         String theme = prefs.getString("theme", "system");
@@ -216,6 +251,8 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
+        if (activeNotice != null) activeNotice.dismiss();
+        cancelHistorySearch();
         palette();
         root.removeAllViews();
         root.setBackgroundColor(paper);
@@ -225,10 +262,15 @@ public final class MainActivity extends Activity {
         root.addView(screen, new FrameLayout.LayoutParams(MATCH, MATCH));
         drawer = null;
         input = null;
+        composerAnchor = null;
         reasoningRow = null;
         sendButton = null;
         chatScroll = null;
+        turnAnchors.clear();
+        latestButton = null;
+        directoryButton = null;
         liveReply = null;
+        liveAnchors = null;
         liveStatus = null;
         liveActions = null;
         liveSource = null;
@@ -271,15 +313,27 @@ public final class MainActivity extends Activity {
         identity.setOnClickListener(v -> chooseModel());
         Motion.press(identity, this::motionEnabled);
         toolbar.addView(identity, new LinearLayout.LayoutParams(0, WRAP, 1));
+        directoryButton = iconButton("消息目录", R.drawable.ic_list, ink, 0, this::showMessageDirectory);
+        directoryButton.setVisibility(View.GONE);
+        toolbar.addView(directoryButton);
         toolbar.addView(iconButton("新建聊天", R.drawable.ic_plus, ink, 0, this::newChat));
         screen.addView(toolbar);
 
+        FrameLayout transcriptArea = new FrameLayout(this);
         chatScroll = new TranscriptScroll();
         chatScroll.setFillViewport(true);
-        screen.addView(chatScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        transcriptArea.addView(chatScroll, new FrameLayout.LayoutParams(MATCH, MATCH));
+        latestButton = iconButton("回到最新", R.drawable.ic_latest, ink, tint, () -> chatScroll.toLatest());
+        latestButton.setVisibility(View.GONE);
+        var latestPosition = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM | Gravity.END);
+        latestPosition.setMarginEnd(dp(12));
+        latestPosition.bottomMargin = dp(8);
+        transcriptArea.addView(latestButton, latestPosition);
+        screen.addView(transcriptArea, new LinearLayout.LayoutParams(MATCH, 0, 1));
         renderMessages();
 
         LinearLayout composer = row();
+        composerAnchor = composer;
         composer.setGravity(Gravity.CENTER_VERTICAL);
         composer.setPadding(dp(12), dp(3), dp(4), dp(3));
         String material = prefs.getString("material", "solid");
@@ -296,7 +350,7 @@ public final class MainActivity extends Activity {
         input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         input.setBackground(null);
         input.setPadding(dp(4), dp(9), dp(6), dp(9));
-        input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(4000)});
+        input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(MESSAGE_LIMIT)});
         input.setText(draft);
         input.setEnabled(!sending);
         composer.addView(input, new LinearLayout.LayoutParams(0, WRAP, 1));
@@ -402,7 +456,11 @@ public final class MainActivity extends Activity {
 
     private void renderMessages(boolean followLatest) {
         int previousY = chatScroll.getScrollY();
+        turnAnchors.clear();
+        directoryButton.setVisibility(View.GONE);
         liveReply = null;
+        liveAnchors = null;
+        liveHasArtifacts = false;
         liveStatus = null;
         liveActions = null;
         liveSource = null;
@@ -439,26 +497,33 @@ public final class MainActivity extends Activity {
             ChatHistory history = store.active.history;
             for (int id : history.path(streamReply == null ? history.leaf() : streamReply.parent)) {
                 ChatHistory.Turn turn = history.turn(id);
-                messageBubble(transcript, turn.prompt());
+                View question = messageBubble(transcript, turn.prompt());
                 space(transcript, 15);
-                ReplyText reply = replyView(transcript, turn.model(), false);
-                reply.update(markdown(turn.reply()), false, dp(4));
+                LinearLayout answer = column();
+                transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
+                turnAnchors.put(id, new TurnAnchors(question, answer));
+                ReplyText reply = replyView(answer, turn.model(), false);
+                var markdown = markdown(turn.reply());
+                reply.update(markdown.text(), false, dp(4));
                 if (turn.reply().isBlank()) reply.setVisibility(View.GONE);
-                if (turn.card() != null) addCard(transcript, store.active, id);
+                if (turn.card() != null) addCard(answer, store.active, id);
                 String status = replyStateLabel(turn.replyState());
                 if (status != null) {
                     TextView marker = text(status, 13, muted, false);
                     marker.setPadding(dp(8), dp(4), dp(8), 0);
-                    transcript.addView(marker);
+                    answer.addView(marker);
                 }
-                messageActions(transcript, id);
+                messageActions(answer, id, markdown.hasArtifacts());
                 space(transcript, 8);
             }
         }
         if (pendingPrompt != null) {
-            messageBubble(transcript, pendingPrompt);
+            View question = messageBubble(transcript, pendingPrompt);
             space(transcript, 15);
-            liveReply = replyView(transcript, streamReply.model, true);
+            LinearLayout answer = column();
+            transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
+            liveReply = replyView(answer, streamReply.model, true);
+            liveAnchors = new TurnAnchors(question, answer);
             liveReply.setVisibility(View.GONE);
         }
         if (replyStatus != null) {
@@ -482,6 +547,7 @@ public final class MainActivity extends Activity {
             transcript.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
         }
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
+        directoryButton.setVisibility(turnAnchors.isEmpty() ? View.GONE : View.VISIBLE);
         if (streamReply != null) showStream(streamReply, streamReply.snapshot(), true);
     }
 
@@ -498,7 +564,7 @@ public final class MainActivity extends Activity {
                     String answer = current.card().draft(current.cardState());
                     if (answer.isBlank()) { notice("请先选择一项"); return; }
                     String combined = draft.isBlank() ? answer : draft + "\n\n" + answer;
-                    if (combined.length() > 4000) { notice("草稿空间不足，未加入卡片内容"); return; }
+                    if (combined.length() > MESSAGE_LIMIT) { notice("草稿空间不足，未加入卡片内容"); return; }
                     input.setText(combined);
                     input.setSelection(input.length());
                     notice("已加入草稿");
@@ -533,7 +599,7 @@ public final class MainActivity extends Activity {
         return reply;
     }
 
-    private android.text.SpannableStringBuilder markdown(String source) {
+    private MarkdownText.Rendered markdown(String source) {
         return MarkdownText.render(source, ink, muted, tint, dp(9));
     }
 
@@ -545,19 +611,21 @@ public final class MainActivity extends Activity {
     private void showStream(StreamReply stream, String source, boolean allowOpening) {
         if (streamReply != stream || liveReply == null || source.isBlank() || source.equals(liveSource)) return;
         var content = markdown(source);
-        if (content.length() == 0) return;
+        if (content.text().length() == 0) return;
+        liveHasArtifacts = content.hasArtifacts();
         boolean animate = allowOpening && motionEnabled() && (!stream.presented || liveReply.hasOpening());
         stream.presented = true;
         liveSource = source;
         if (liveStatus != null) liveStatus.setVisibility(View.GONE);
         liveReply.setVisibility(View.VISIBLE);
-        liveReply.update(content, animate, dp(2));
+        liveReply.update(content.text(), animate, dp(2));
     }
 
     private final class TranscriptScroll extends ScrollView {
         private boolean following = true;
         private boolean layingOut;
         private int restoreY = -1;
+        private View pendingAnchor;
 
         TranscriptScroll() {
             super(MainActivity.this);
@@ -565,8 +633,22 @@ public final class MainActivity extends Activity {
         }
 
         void restorePosition(boolean follow, int y) {
+            pendingAnchor = null;
             following = follow;
             restoreY = y;
+        }
+
+        void toLatest() {
+            pendingAnchor = null;
+            following = true;
+            if (getChildCount() > 0) scrollTo(0, getChildAt(0).getBottom());
+            updateLatest();
+        }
+
+        void toAnchor(View target) {
+            following = false;
+            pendingAnchor = target;
+            requestLayout();
         }
 
         @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
@@ -574,24 +656,40 @@ public final class MainActivity extends Activity {
             layingOut = true;
             try {
                 super.onLayout(changed, left, top, right, bottom);
+                if (pendingAnchor != null && pendingAnchor.isAttachedToWindow()) {
+                    Rect bounds = new Rect();
+                    pendingAnchor.getDrawingRect(bounds);
+                    offsetDescendantRectToMyCoords(pendingAnchor, bounds);
+                    y = Math.max(0, bounds.top - dp(8));
+                }
                 if (getChildCount() > 0) scrollTo(0, following ? getChildAt(0).getBottom() : y);
             } finally {
                 layingOut = false;
                 restoreY = -1;
+                pendingAnchor = null;
             }
+            updateLatest();
         }
 
         @Override protected void onScrollChanged(int x, int y, int oldX, int oldY) {
             super.onScrollChanged(x, y, oldX, oldY);
             if (layingOut || restoreY >= 0 || y == oldY || getChildCount() == 0) return;
-            following = y > oldY && getChildAt(0).getBottom() - getHeight() - y <= dp(56);
+            following = y > oldY && !canScrollVertically(1);
+            updateLatest();
+        }
+
+        private void updateLatest() {
+            if (this == chatScroll && latestButton != null) {
+                int visibility = !following && canScrollVertically(1) ? View.VISIBLE : View.GONE;
+                if (latestButton.getVisibility() != visibility) latestButton.setVisibility(visibility);
+            }
         }
     }
 
-    private void messageBubble(LinearLayout transcript, String message) {
+    private View messageBubble(LinearLayout transcript, String message) {
         TextView user = text("", 16, ink, false);
         user.setTextIsSelectable(true);
-        user.setText(markdown(message), TextView.BufferType.SPANNABLE);
+        user.setText(markdown(message).text(), TextView.BufferType.SPANNABLE);
         user.setMovementMethod(LinkMovementMethod.getInstance());
         user.setLinkTextColor(contrast(accent, tint) >= 4.5 ? accent : ink);
         user.setLineSpacing(dp(4), 1);
@@ -601,22 +699,26 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams bubble = new LinearLayout.LayoutParams(WRAP, WRAP);
         bubble.gravity = Gravity.END;
         transcript.addView(user, bubble);
+        return user;
     }
 
-    private void messageActions(LinearLayout transcript, int id) {
+    private void messageActions(LinearLayout transcript, int id, boolean hasArtifacts) {
         LinearLayout actions = row();
         actions.setGravity(Gravity.CENTER_VERTICAL);
-        ChatHistory history = store.active.history;
+        ChatStore.Chat chat = store.active;
+        ChatHistory history = chat.history;
         ChatHistory.Turn turn = history.turn(id);
         if (!turn.reply().isBlank() || turn.card() != null) {
             actions.addView(iconButton("复制回复", R.drawable.ic_copy, muted, 0,
-                    () -> copyReply(turn.assistantText())));
+                    () -> copyText(turn.assistantText())));
         }
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
         actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
             if (sending) { notice("请先停止当前生成"); return; }
             submit(turn.prompt(), history.parent(id), false);
         }));
+        actions.addView(iconButton("消息更多操作", R.drawable.ic_more, muted, 0,
+                () -> showMessageMenu(chat, id, hasArtifacts)));
         List<Integer> versions = history.variants(id);
         if (versions.size() > 1) {
             int current = versions.indexOf(id);
@@ -645,7 +747,7 @@ public final class MainActivity extends Activity {
         transcript.addView(actions);
     }
 
-    private void copyReply(String source) {
+    private void copyText(String source) {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
         ClipData clip = ClipData.newPlainText("Serein", source);
         PersistableBundle extras = new PersistableBundle();
@@ -653,7 +755,106 @@ public final class MainActivity extends Activity {
         clip.getDescription().setExtras(extras);
         if (clipboard == null) { notice("剪贴板不可用"); return; }
         try { clipboard.setPrimaryClip(clip); }
-        catch (RuntimeException error) { notice("无法复制整条回复，请长按选中部分内容"); }
+        catch (RuntimeException error) { notice("内容太长或剪贴板不可用，可选中部分内容再复制"); }
+    }
+
+    private void showMessageDirectory() {
+        ChatStore.Chat chat = store.active;
+        if (chat == null || turnAnchors.isEmpty()) return;
+        List<MenuItem> items = new ArrayList<>();
+        int number = 1;
+        for (int id : turnAnchors.keySet()) {
+            String label = number++ + " · " + preview(chat.history.turn(id).prompt(), 82);
+            items.add(new MenuItem(label, () -> jumpTo(chat, id, false)));
+        }
+        showMenu("消息目录", items);
+    }
+
+    private void jumpTo(ChatStore.Chat chat, int id, boolean answer) {
+        if (store.active != chat || chatScroll == null) return;
+        TurnAnchors anchors = turnAnchors.get(id);
+        if (anchors != null) chatScroll.toAnchor(answer ? anchors.answer() : anchors.prompt());
+    }
+
+    private void showMessageMenu(ChatStore.Chat chat, int id, boolean hasArtifacts) {
+        if (store.active != chat || !turnAnchors.containsKey(id)) return;
+        ChatHistory.Turn turn = chat.history.turn(id);
+        List<MenuItem> items = new ArrayList<>();
+        if (!turn.reply().isBlank() || turn.card() != null) {
+            items.add(new MenuItem("引用到草稿", () -> quoteReply(turn)));
+        }
+        items.add(new MenuItem("从此消息创建分支", () -> forkChat(chat, id)));
+        if (hasArtifacts) items.add(new MenuItem("代码与表格", () -> openArtifacts(chat, id)));
+        showMenu("消息操作", items);
+    }
+
+    private void showMenu(String title, List<MenuItem> items) {
+        String[] labels = items.stream().map(MenuItem::label).toArray(String[]::new);
+        AlertDialog dialog = dialogBuilder().setTitle(title).setAdapter(UiOverlays.menuRows(controls, labels, ink), (d, index) -> {
+            d.dismiss();
+            items.get(index).action().run();
+        }).setNegativeButton("关闭", null).create();
+        showDialog(dialog, true);
+    }
+
+    private void quoteReply(ChatHistory.Turn turn) {
+        if (sending || input == null) { notice("请先停止当前生成"); return; }
+        var quote = ChatArtifacts.quote(draft, turn.assistantText(), MESSAGE_LIMIT);
+        if (quote == null) { notice("草稿空间不足，未加入引用"); return; }
+        input.setText(quote.value());
+        input.setSelection(input.length());
+        input.requestFocus();
+        getSystemService(InputMethodManager.class).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+        if (quote.truncated()) notice("草稿空间有限，已引用部分回复");
+    }
+
+    private void forkChat(ChatStore.Chat chat, int id) {
+        if (sending) { notice("请先停止当前生成"); return; }
+        confirmLeavingDraft(() -> {
+            try { store.fork(chat, id); }
+            catch (IllegalStateException error) { notice("无法创建会话分支"); return; }
+            draft = "";
+            clearReplyNotice();
+            go(CHAT);
+        });
+    }
+
+    private void openArtifacts(ChatStore.Chat chat, int id) {
+        if (store.active != chat || !turnAnchors.containsKey(id)) return;
+        View owner = screen;
+        String source = chat.history.turn(id).reply();
+        localWork.execute(() -> {
+            ChatArtifacts.Blocks blocks = ChatArtifacts.blocks(source);
+            ui.post(() -> {
+                if (isDestroyed() || screen != owner || store.active != chat || !turnAnchors.containsKey(id)) return;
+                if (blocks.items().isEmpty()) { notice("这条回复没有代码块或表格"); return; }
+                if (blocks.items().size() == 1) { showArtifact(blocks.items().get(0)); return; }
+                List<MenuItem> items = new ArrayList<>();
+                int number = 1;
+                for (ChatArtifacts.Block block : blocks.items()) {
+                    items.add(new MenuItem(number++ + " · " + ArtifactViewer.label(block), () -> showArtifact(block)));
+                }
+                showMenu(blocks.limited() ? "代码与表格 · 前 100 项" : "代码与表格", items);
+            });
+        });
+    }
+
+    private void showArtifact(ChatArtifacts.Block block) {
+        ChatArtifacts.Document file;
+        Runnable copy;
+        if (block instanceof ChatArtifacts.CodeBlock code) {
+            file = ChatArtifacts.codeFile(code);
+            copy = () -> copyText(code.source());
+        } else {
+            var table = (ChatArtifacts.Table) block;
+            file = ChatArtifacts.csvFile(table);
+            copy = () -> localWork.execute(() -> {
+                String content = ChatArtifacts.tableClipboard(table);
+                ui.post(() -> { if (!isDestroyed()) copyText(content); });
+            });
+        }
+        var colors = new ArtifactViewer.Colors(ink, muted, panel, line, tint, controlAccent());
+        showDialog(ArtifactViewer.dialog(dialogBuilder(), controls, block, colors, copy, () -> chooseExport(file)), true);
     }
 
     private static String preview(String value, int length) {
@@ -742,14 +943,14 @@ public final class MainActivity extends Activity {
                     chat == null ? null : chat.checkpoint, account, compact);
         };
         if (!prefs.getBoolean(consent, false)) {
-            dialogBuilder().setTitle("发送给 " + target.provider().label)
+            showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
                     .setMessage(target.provider().base + "\n\n将发送当前版本的聊天内容。"
                             + (account.isEmpty() ? "" : "已开启账户资料分享，名称和简介也会发送。")
                             + (compact ? "长对话可能先发送旧消息生成摘要，产生额外请求和费用。" : ""))
                     .setNegativeButton("取消", null).setPositiveButton("发送", (dialog, item) -> {
                         prefs.edit().putBoolean(consent, true).apply();
                         send.run();
-                    }).show();
+                    }).create(), true);
         } else send.run();
     }
 
@@ -953,20 +1154,33 @@ public final class MainActivity extends Activity {
                 if (outcome == ChatHistory.ReplyState.INTERRUPTED && problem != null) status += "\n" + problem;
                 liveStatus.setText(status);
                 liveStatus.setVisibility(status == null ? View.GONE : View.VISIBLE);
-                if (card != null) addCard(liveActions, store.active, store.active.history.leaf());
-                messageActions(liveActions, store.active.history.leaf());
+                int id = store.active.history.leaf();
+                turnAnchors.put(id, liveAnchors);
+                directoryButton.setVisibility(View.VISIBLE);
+                if (card != null) addCard(liveActions, store.active, id);
+                messageActions(liveActions, id, liveHasArtifacts);
             } else renderMessages(chatScroll.following);
         }
     }
 
     private void newChat() {
         if (sending) { notice("正在等待回复"); return; }
-        if (input != null) hideKeyboard();
-        try { store.open(null); }
-        catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
-        draft = "";
-        clearReplyNotice();
-        go(CHAT);
+        confirmLeavingDraft(() -> {
+            hideKeyboard();
+            try { store.open(null); }
+            catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
+            draft = "";
+            clearReplyNotice();
+            go(CHAT);
+        });
+    }
+
+    private void confirmLeavingDraft(Runnable action) {
+        if (draft.isBlank()) action.run();
+        else showDialog(dialogBuilder().setTitle("舍弃当前草稿？")
+                .setMessage("还有尚未发送的输入。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("舍弃并继续", (dialog, index) -> action.run()).create(), true);
     }
 
     private void openDrawer() {
@@ -993,7 +1207,10 @@ public final class MainActivity extends Activity {
         header.addView(logo(40));
         TextView brand = text("Serein", 21, ink, true);
         brand.setPadding(dp(7), 0, 0, 0);
+        brand.setSingleLine(true);
+        brand.setEllipsize(TextUtils.TruncateAt.END);
         header.addView(brand, new LinearLayout.LayoutParams(0, WRAP, 1));
+        header.addView(iconButton("搜索会话", R.drawable.ic_search, ink, 0, () -> go(SEARCH)));
         View close = iconButton("关闭侧栏", R.drawable.ic_close, ink, 0, this::closeDrawer);
         header.addView(close);
         rail.addView(header);
@@ -1003,9 +1220,20 @@ public final class MainActivity extends Activity {
         rail.addView(start, new LinearLayout.LayoutParams(MATCH, WRAP));
         space(rail, 14);
         ScrollView historyScroll = scroll();
+        LinearLayout historyPane = column();
         LinearLayout history = column();
+        MaterialButton archive = action(drawerArchived ? "最近会话" : "已归档",
+                R.drawable.ic_archive, 0, ink, 0);
+        archive.setOnClickListener(v -> {
+            drawerArchived = !drawerArchived;
+            archive.setText(drawerArchived ? "最近会话" : "已归档");
+            renderHistory(history);
+            historyScroll.scrollTo(0, 0);
+        });
+        historyPane.addView(archive, new LinearLayout.LayoutParams(MATCH, WRAP));
         renderHistory(history);
-        historyScroll.addView(history);
+        historyPane.addView(history);
+        historyScroll.addView(historyPane);
         rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         rule(rail);
         String name = profile.displayName();
@@ -1022,23 +1250,37 @@ public final class MainActivity extends Activity {
 
     private void renderHistory(LinearLayout history) {
         history.removeAllViews();
-        if (store.recent.isEmpty()) {
-            sectionTitle(history, "最近会话");
-            TextView empty = text("暂无会话", 14, muted, false);
-            empty.setPadding(dp(8), dp(10), dp(8), dp(10));
-            history.addView(empty);
+        if (drawerArchived) {
+            sectionTitle(history, "已归档");
+            boolean hasArchived = false;
+            for (ChatStore.Chat chat : store.recent) {
+                if (!chat.archived) continue;
+                hasArchived = true;
+                addHistoryRow(history, chat);
+            }
+            if (!hasArchived) addHistoryEmpty(history, "暂无归档会话");
             return;
         }
-        boolean hasPinned = store.recent.stream().anyMatch(chat -> chat.pinned);
+        boolean hasPinned = store.recent.stream().anyMatch(chat -> chat.pinned && !chat.archived);
+        boolean hasRecent = store.recent.stream().anyMatch(chat -> !chat.pinned && !chat.archived);
+        if (!hasPinned && !hasRecent) {
+            sectionTitle(history, "最近会话");
+            addHistoryEmpty(history, "暂无会话");
+        }
         if (hasPinned) {
             sectionTitle(history, "置顶");
-            for (ChatStore.Chat chat : store.recent) if (chat.pinned) addHistoryRow(history, chat);
+            for (ChatStore.Chat chat : store.recent) if (chat.pinned && !chat.archived) addHistoryRow(history, chat);
         }
-        boolean hasRecent = store.recent.stream().anyMatch(chat -> !chat.pinned);
         if (hasRecent) {
             sectionTitle(history, "最近会话");
-            for (ChatStore.Chat chat : store.recent) if (!chat.pinned) addHistoryRow(history, chat);
+            for (ChatStore.Chat chat : store.recent) if (!chat.pinned && !chat.archived) addHistoryRow(history, chat);
         }
+    }
+
+    private void addHistoryEmpty(LinearLayout history, String label) {
+        TextView empty = text(label, 14, muted, false);
+        empty.setPadding(dp(8), dp(10), dp(8), dp(10));
+        history.addView(empty);
     }
 
     private void addHistoryRow(LinearLayout parent, ChatStore.Chat chat) {
@@ -1072,18 +1314,7 @@ public final class MainActivity extends Activity {
         if (current) bottom.addView(icon(R.drawable.ic_check, 18, accent));
         item.addView(bottom);
         item.setFocusable(true);
-        item.setOnClickListener(v -> {
-            if (store.active == chat) {
-                closeDrawer();
-                return;
-            }
-            if (sending) { notice("正在等待回复"); return; }
-            try { store.open(chat); }
-            catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
-            draft = "";
-            clearReplyNotice();
-            go(CHAT);
-        });
+        item.setOnClickListener(v -> openHistoryChat(chat, -1, false));
         entry.addView(item, new LinearLayout.LayoutParams(0, WRAP, 1));
         MaterialButton more = iconButton("会话选项", R.drawable.ic_more, muted, 0, () -> historyOptions(parent, chat));
         more.setContentDescription("会话选项 · " + chat.title);
@@ -1091,21 +1322,58 @@ public final class MainActivity extends Activity {
         parent.addView(entry, new LinearLayout.LayoutParams(MATCH, WRAP));
     }
 
+    private void openHistoryChat(ChatStore.Chat chat, int id, boolean answer) {
+        if (store.active == chat) {
+            if (!page.equals(CHAT)) {
+                hideKeyboard();
+                go(CHAT);
+            } else closeDrawer();
+            if (id >= 0) jumpTo(chat, id, answer);
+            return;
+        }
+        if (sending) { notice("正在等待回复"); return; }
+        confirmLeavingDraft(() -> {
+            try { store.open(chat); }
+            catch (IllegalStateException error) { notice("无法保存会话状态"); return; }
+            hideKeyboard();
+            draft = "";
+            clearReplyNotice();
+            go(CHAT);
+            if (id >= 0) jumpTo(chat, id, answer);
+        });
+    }
+
     private void historyOptions(LinearLayout history, ChatStore.Chat chat) {
-        String togglePin = chat.pinned ? "取消置顶" : "置顶会话";
-        AlertDialog dialog = dialogBuilder().setTitle(preview(chat.title, 45))
-                .setItems(new String[]{togglePin, "重命名", "删除会话"}, (d, index) -> {
-                    if (index == 0) {
-                        try {
-                            store.pin(chat, !chat.pinned);
-                            renderHistory(history);
-                        } catch (IllegalStateException error) {
-                            notice("无法更新本机会话");
-                        }
-                    } else if (index == 1) renameChat(history, chat);
-                    else confirmDeleteChat(history, chat);
-                }).setNegativeButton("取消", null).create();
-        showDialog(dialog, true);
+        List<MenuItem> items = new ArrayList<>();
+        if (!chat.archived) items.add(new MenuItem(chat.pinned ? "取消置顶" : "置顶会话", () -> {
+            try { store.pin(chat, !chat.pinned); renderHistory(history); }
+            catch (IllegalStateException error) { notice("无法更新本机会话"); }
+        }));
+        items.add(new MenuItem("重命名", () -> renameChat(history, chat)));
+        items.add(new MenuItem(chat.archived ? "恢复到最近会话" : "归档会话", () -> archiveChat(history, chat)));
+        items.add(new MenuItem("导出 Markdown", () -> confirmConversationExport(chat)));
+        items.add(new MenuItem("删除会话", () -> confirmDeleteChat(history, chat)));
+        showMenu(preview(chat.title, 45), items);
+    }
+
+    private void archiveChat(LinearLayout history, ChatStore.Chat chat) {
+        boolean archive = !chat.archived;
+        boolean closeActive = archive && store.active == chat;
+        if (closeActive && sending) { notice("请先停止当前生成"); return; }
+        Runnable save = () -> {
+            try { store.archive(chat, archive); }
+            catch (IllegalStateException error) { notice("无法更新本机会话"); return; }
+            if (closeActive) {
+                draft = "";
+                input.setText("");
+                clearReplyNotice();
+                renderMessages();
+            }
+            renderHistory(history);
+            notice(archive ? "会话已归档" : "会话已恢复");
+        };
+        if (closeActive) confirmLeavingDraft(save);
+        else save.run();
     }
 
     private void renameChat(LinearLayout history, ChatStore.Chat chat) {
@@ -1158,7 +1426,7 @@ public final class MainActivity extends Activity {
 
     private void navigateBack() {
         if (drawer != null) closeDrawer();
-        else if (page.equals(SETTINGS) || page.equals(ACCOUNT)) {
+        else if (page.equals(SETTINGS) || page.equals(ACCOUNT) || page.equals(SEARCH)) {
             hideKeyboard();
             go(CHAT);
             openDrawer();
@@ -1187,6 +1455,7 @@ public final class MainActivity extends Activity {
         String heading = switch (page) {
             case SETTINGS -> "设置";
             case ACCOUNT -> "账户";
+            case SEARCH -> "搜索会话";
             case "provider" -> providers.get(providerPage).label;
             default -> findSection(page).title();
         };
@@ -1195,6 +1464,10 @@ public final class MainActivity extends Activity {
         title.setPadding(dp(5), 0, 0, 0);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
         screen.addView(toolbar);
+        if (page.equals(SEARCH)) {
+            renderHistorySearch();
+            return;
+        }
         ScrollView scroll = scroll();
         LinearLayout body = column();
         body.setPadding(dp(20), dp(12), dp(20), dp(24));
@@ -1212,11 +1485,11 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.8 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.10 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话历史、交互卡片选择、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。在线聊天内容会通过 HTTPS 发给当前服务商。交互卡片选择不会随历史自动发送；加入草稿后仍需手动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
+            case "policy" -> body.addView(text("会话历史、归档、交互卡片选择、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。搜索只在本机内存运行。通过系统文件选择器导出的文件不受应用内加密保护。在线聊天内容会通过 HTTPS 发给当前服务商。交互卡片选择不会随历史自动发送；加入草稿后仍需手动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
@@ -1227,6 +1500,83 @@ public final class MainActivity extends Activity {
                 license(body, "Material Components 与 AndroidX · Apache 2.0 许可", "material-components");
             }
         }
+    }
+
+    private void renderHistorySearch() {
+        View owner = screen;
+        List<ChatSearch.Source> snapshot = ChatSearch.snapshot(store.recent);
+        LinearLayout filters = column();
+        filters.setPadding(dp(20), dp(8), dp(20), 0);
+        EditText query = field(filters, "会话标题或内容", "", false);
+        query.setFilters(new InputFilter[]{new InputFilter.LengthFilter(ChatSearch.QUERY_LIMIT)});
+        query.setSaveEnabled(false);
+        query.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        query.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                | android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        MaterialSwitch archives = settingSwitch(filters, "包含已归档会话", drawerArchived);
+        screen.addView(filters);
+
+        TextView status = text("", 13, muted, false);
+        status.setPadding(dp(20), dp(8), dp(20), dp(8));
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setVisibility(View.GONE);
+        screen.addView(status);
+        ScrollView scroll = scroll();
+        LinearLayout matches = column();
+        matches.setPadding(dp(20), 0, dp(20), dp(12));
+        scroll.addView(matches);
+        screen.addView(scroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
+
+        Runnable search = () -> {
+            cancelHistorySearch();
+            String value = query.getText().toString();
+            boolean includeArchives = archives.isChecked();
+            matches.removeAllViews();
+            boolean empty = value.isBlank();
+            status.setVisibility(empty ? View.GONE : View.VISIBLE);
+            if (empty) return;
+            status.setText("搜索中…");
+            int generation = historyQueryGeneration;
+            queuedHistorySearch = () -> runningHistorySearch = localWork.submit(() -> {
+                ChatSearch.Results found = ChatSearch.find(snapshot, value, includeArchives);
+                ui.post(() -> {
+                    if (owner != screen || isDestroyed() || generation != historyQueryGeneration) return;
+                    int count = found.hits().size();
+                    status.setText(count == 0 ? "没有匹配的会话" : found.limited()
+                            ? "前 " + count + " 个匹配会话" : count + " 个匹配会话");
+                    for (ChatSearch.Hit hit : found.hits()) {
+                        String label = hit.excerpt();
+                        if (hit.source().archived()) label = label.isEmpty() ? "已归档" : "已归档 · " + label;
+                        addRow(matches, hit.source().title(), label,
+                                hit.source().archived() ? R.drawable.ic_archive : R.drawable.ic_file,
+                                () -> openHistoryChat(hit.source().chat(), hit.id(), hit.answer()));
+                        rule(matches);
+                    }
+                    scroll.scrollTo(0, 0);
+                });
+            });
+            ui.postDelayed(queuedHistorySearch, 150);
+        };
+        watch(query, ignored -> search.run());
+        archives.setOnCheckedChangeListener((button, checked) -> search.run());
+        query.setOnEditorActionListener((view, action, event) -> {
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return false;
+            hideKeyboard();
+            return true;
+        });
+        query.post(() -> {
+            if (owner != screen || isDestroyed()) return;
+            query.requestFocus();
+            getSystemService(InputMethodManager.class).showSoftInput(query, InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+
+    private void cancelHistorySearch() {
+        historyQueryGeneration++;
+        if (queuedHistorySearch != null) ui.removeCallbacks(queuedHistorySearch);
+        if (runningHistorySearch != null) runningHistorySearch.cancel(true);
+        queuedHistorySearch = null;
+        runningHistorySearch = null;
     }
 
     private Section findSection(String id) {
@@ -1247,15 +1597,12 @@ public final class MainActivity extends Activity {
 
     private void chooseModel() {
         hideKeyboard();
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        AppCompatDialog dialog = new AppCompatDialog(controls);
+        dialog.supportRequestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout sheet = column();
         sheet.setPadding(dp(16), dp(8), dp(16), dp(8));
         sheet.setFocusableInTouchMode(true);
-        GradientDrawable background = shape(panel, 24, 0);
-        int radius = dp(24);
-        background.setCornerRadii(new float[]{radius, radius, radius, radius, 0, 0, 0, 0});
-        sheet.setBackground(background);
+        sheet.setBackground(UiKit.sheetSurface(controls, panel, line));
 
         LinearLayout heading = row();
         heading.setPadding(dp(4), 0, 0, 0);
@@ -1345,7 +1692,7 @@ public final class MainActivity extends Activity {
         Window window = dialog.getWindow();
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND | WindowManager.LayoutParams.FLAG_SECURE);
         window.setDimAmount(.35f);
         window.setWindowAnimations(0);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
@@ -1446,11 +1793,11 @@ public final class MainActivity extends Activity {
             addRow(body, model.title(), subtitle, modelCatalog.icon(model), () -> editModel(provider, model));
         }
         space(body, 22);
-        command(body, "移除服务商", R.drawable.ic_close, () -> dialogBuilder().setTitle("移除 " + provider.label + "？")
+        command(body, "移除服务商", R.drawable.ic_close, () -> showDialog(dialogBuilder().setTitle("移除 " + provider.label + "？")
                 .setNegativeButton("取消", null).setPositiveButton("移除", (d, i) -> {
                     try { providers.remove(provider); go("providers"); }
                     catch (IllegalStateException error) { notice("无法更新本机配置"); }
-                }).show());
+                }).create(), true));
     }
 
     private void editProvider(Providers.Provider old) {
@@ -1471,18 +1818,16 @@ public final class MainActivity extends Activity {
     }
 
     private void keyOptions(Providers.Provider provider, int position) {
-        dialogBuilder().setTitle(provider.keys.get(position).label())
-                .setItems(new String[]{"使用这把 Key", "编辑", "移除"}, (dialog, index) -> {
-                    if (index == 0) putProvider(provider.credentials(provider.keys, position));
-                    if (index == 1) editKey(provider, position);
-                    if (index == 2) dialogBuilder().setTitle("移除这把 Key？")
+        showMenu(provider.keys.get(position).label(), List.of(
+                new MenuItem("使用这把 Key", () -> putProvider(provider.credentials(provider.keys, position))),
+                new MenuItem("编辑", () -> editKey(provider, position)),
+                new MenuItem("移除", () -> showDialog(dialogBuilder().setTitle("移除这把 Key？")
                             .setNegativeButton("取消", null).setPositiveButton("移除", (d, i) -> {
                                 List<Providers.Key> updated = new ArrayList<>(provider.keys);
                                 updated.remove(position);
                                 int selected = provider.activeKey > position ? provider.activeKey - 1 : provider.activeKey;
                                 putProvider(provider.credentials(updated, selected));
-                            }).show();
-                }).show();
+                            }).create(), true))));
     }
 
     private void editKey(Providers.Provider provider, int position) {
@@ -1546,17 +1891,17 @@ public final class MainActivity extends Activity {
         iconControl.setOnClickListener(v -> {
             String[] labels = ModelIcons.OPTIONS.stream().map(ModelIcons.Option::label).toArray(String[]::new);
             int selected = ModelIcons.OPTIONS.indexOf(ModelIcons.option(iconOverride[0]));
-            dialogBuilder().setTitle("模型图标")
+            showDialog(dialogBuilder().setTitle("模型图标")
                     .setSingleChoiceItems(labels, selected, (dialog, position) -> {
                         iconOverride[0] = ModelIcons.OPTIONS.get(position).id();
                         refresh.run();
                         dialog.dismiss();
-                    }).setNegativeButton("取消", null).show();
+                    }).setNegativeButton("取消", null).create(), true);
         });
         android.widget.RadioGroup modes = new android.widget.RadioGroup(this);
         form.addView(modes);
         for (int i = 0; i < REASONING_MODES.length; i++) {
-            android.widget.RadioButton button = new android.widget.RadioButton(this);
+            var button = new com.google.android.material.radiobutton.MaterialRadioButton(controls);
             button.setId(i + 1);
             button.setMinHeight(dp(48));
             button.setText(reasoningName(REASONING_MODES[i]));
@@ -1630,9 +1975,17 @@ public final class MainActivity extends Activity {
     }
 
     private void fetchCatalog(Providers.Provider provider) {
-        AlertDialog progress = dialogBuilder().setTitle("正在拉取模型")
-                .setNegativeButton("取消", null).create();
-        progress.show();
+        var builder = dialogBuilder().setTitle("正在拉取模型").setNegativeButton("取消", null);
+        if (motionEnabled()) {
+            LinearLayout body = dialogBody();
+            var indicator = new LinearProgressIndicator(controls);
+            indicator.setIndeterminate(true);
+            indicator.setIndicatorColor(controlAccent());
+            body.addView(indicator, new LinearLayout.LayoutParams(MATCH, WRAP));
+            builder.setView(body);
+        }
+        AlertDialog progress = builder.create();
+        showDialog(progress, false);
         worker.execute(() -> {
             List<String> ids;
             try { ids = ModelApi.models(provider); }
@@ -1672,7 +2025,27 @@ public final class MainActivity extends Activity {
         return "请求失败，请检查连接与模型 ID。";
     }
 
-    private void notice(String text) { Toast.makeText(this, text, Toast.LENGTH_LONG).show(); }
+    private void notice(String text) {
+        if (root == null || !root.isAttachedToWindow() || isFinishing() || isDestroyed()) return;
+        openDialogs.removeIf(dialog -> !dialog.isShowing());
+        View host = root;
+        View anchor = drawer == null ? composerAnchor : null;
+        if (!openDialogs.isEmpty()) {
+            AlertDialog top = openDialogs.get(openDialogs.size() - 1);
+            View content = top.findViewById(android.R.id.content);
+            if (content != null && content.isAttachedToWindow()) {
+                host = content;
+                anchor = top.getButton(AlertDialog.BUTTON_POSITIVE);
+                if (anchor == null || anchor.getVisibility() != View.VISIBLE) {
+                    anchor = top.getButton(AlertDialog.BUTTON_NEGATIVE);
+                }
+                if (anchor != null && anchor.getVisibility() != View.VISIBLE) anchor = null;
+            }
+        }
+        if (activeNotice != null) activeNotice.dismiss();
+        activeNotice = UiOverlays.notice(controls, host, anchor, text, ink, paper, motionEnabled());
+        activeNotice.show();
+    }
 
     private void command(LinearLayout body, String title, int glyph, Runnable tap) {
         View button = action(title, glyph, 0, ink, tint);
@@ -1732,14 +2105,15 @@ public final class MainActivity extends Activity {
     }
 
     private MaterialAlertDialogBuilder dialogBuilder() {
-        return new MaterialAlertDialogBuilder(controls == null ? this : controls);
+        if (controls == null) return new MaterialAlertDialogBuilder(this);
+        return UiOverlays.dialog(controls, panel, line);
     }
 
     private void showDialog(AlertDialog dialog, boolean secure) {
-        if (secure) dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        if (!motionEnabled()) dialog.getWindow().setWindowAnimations(0);
-        dialog.show();
+        openDialogs.removeIf(existing -> !existing.isShowing());
+        if (activeNotice != null) activeNotice.dismiss();
+        UiOverlays.show(dialog, secure, motionEnabled(), controls == null ? color("#235543") : controlAccent());
+        openDialogs.add(dialog);
     }
 
     private void settings(LinearLayout body) {
@@ -1858,18 +2232,11 @@ public final class MainActivity extends Activity {
         space(body, 14);
         sectionTitle(body, "聊天背景");
         String background = prefs.getString("background", "plain");
-        addRow(body, "背景", switch (background) {
-            case "wash" -> "主题渐变";
-            case "image" -> "本机图片";
-            default -> "纯色";
-        }, R.drawable.ic_sun, () -> {
-            AlertDialog dialog = dialogBuilder().setTitle("聊天背景")
-                    .setItems(new String[]{"纯色", "主题渐变", "选择本机图片"}, (d, index) -> {
-                        if (index == 2) pickWallpaper();
-                        else setAppearance("background", index == 0 ? "plain" : "wash");
-                    }).setNegativeButton("取消", null).create();
-            showDialog(dialog, false);
-        });
+        dropdown(body, "背景", new String[]{"纯色", "主题渐变", "本机图片"},
+                background.equals("image") ? 2 : background.equals("wash") ? 1 : 0, index -> {
+                    if (index == 2) pickWallpaper();
+                    else setAppearance("background", index == 0 ? "plain" : "wash");
+                });
         if (Wallpaper.file(this).isFile()) {
             addRow(body, "移除本机背景图", "", R.drawable.ic_close, () -> {
                 if (!Wallpaper.file(this).delete()) { notice("无法移除背景图"); return; }
@@ -1881,17 +2248,10 @@ public final class MainActivity extends Activity {
         space(body, 14);
         sectionTitle(body, "材质");
         String material = prefs.getString("material", "solid");
-        addRow(body, "聊天材质", switch (material) {
-            case "glass" -> "磨砂";
-            case "flat" -> "扁平";
-            default -> "实色";
-        }, R.drawable.ic_sliders, () -> {
-            String[] materials = {"solid", "flat", "glass"};
-            AlertDialog dialog = dialogBuilder().setTitle("聊天材质")
-                    .setItems(new String[]{"实色", "扁平", "磨砂"}, (d, i) -> setAppearance("material", materials[i]))
-                    .setNegativeButton("取消", null).create();
-            showDialog(dialog, false);
-        });
+        String[] materials = {"solid", "flat", "glass"};
+        dropdown(body, "聊天材质", new String[]{"实色", "扁平", "磨砂"},
+                material.equals("glass") ? 2 : material.equals("flat") ? 1 : 0,
+                index -> setAppearance("material", materials[index]));
         View preview = text("Serein", 17, ink, true);
         preview.setPadding(dp(14), dp(12), dp(14), dp(12));
         preview.setBackground(shape(material.equals("flat") ? paper : tint, material.equals("flat") ? 8 : 24, line));
@@ -1899,6 +2259,12 @@ public final class MainActivity extends Activity {
         space(body, 24);
         MaterialSwitch reduce = settingSwitch(body, "减少动效", prefs.getBoolean("reduce_motion", false));
         reduce.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("reduce_motion", checked).apply());
+    }
+
+    private void dropdown(LinearLayout body, String label, String[] values, int selected,
+                          java.util.function.IntConsumer choose) {
+        UiKit.dropdown(controls, body, label, values, selected, ink, muted, line, controlAccent(),
+                panel, tint, choose);
     }
 
     private void setAppearance(String name, String value) {
@@ -1925,8 +2291,58 @@ public final class MainActivity extends Activity {
         catch (android.content.ActivityNotFoundException error) { notice("找不到系统图片选择器"); }
     }
 
+    private void confirmConversationExport(ChatStore.Chat chat) {
+        var file = ChatArtifacts.conversation(chat);
+        showDialog(dialogBuilder().setTitle("导出 Markdown？")
+                .setMessage("文件不会加密。只导出当前版本的已保存内容，不额外包含服务商配置、账户资料或卡片选择。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("选择保存位置", (dialog, index) -> chooseExport(file)).create(), true);
+    }
+
+    private void chooseExport(ChatArtifacts.Document document) {
+        if (pendingExport != null) return;
+        Intent picker = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(document.mime())
+                .putExtra(Intent.EXTRA_TITLE, document.fileName());
+        pendingExport = document;
+        try { startActivityForResult(picker, CREATE_EXPORT); }
+        catch (android.content.ActivityNotFoundException | SecurityException error) {
+            pendingExport = null;
+            notice("找不到可用的系统文件选择器");
+        }
+    }
+
+    private void finishExport(int result, Intent data) {
+        ChatArtifacts.Document file = pendingExport;
+        pendingExport = null;
+        if (result != RESULT_OK) return;
+        if (file == null) { notice("导出已失效，请重新选择"); return; }
+        android.net.Uri uri = data == null ? null : data.getData();
+        if (uri == null || !"content".equals(uri.getScheme())) { notice("无法写入所选位置"); return; }
+        var resolver = getApplicationContext().getContentResolver();
+        localWork.execute(() -> {
+            String status = "文件已保存";
+            try {
+                OutputStream stream = resolver.openOutputStream(uri, "wt");
+                if (stream == null) throw new IOException("No output stream");
+                try (var out = new BufferedWriter(new OutputStreamWriter(stream, StandardCharsets.UTF_8))) {
+                    file.content().write(out);
+                }
+            } catch (IOException | RuntimeException error) {
+                status = "无法保存文件，请检查所选位置";
+            }
+            String message = status;
+            ui.post(() -> { if (!isDestroyed()) notice(message); });
+        });
+    }
+
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == CREATE_EXPORT) {
+            finishExport(result, data);
+            return;
+        }
         if (request != PICK_BACKGROUND || result != RESULT_OK || data == null || data.getData() == null) return;
         android.net.Uri uri = data.getData();
         worker.execute(() -> {
@@ -2078,11 +2494,7 @@ public final class MainActivity extends Activity {
     }
 
     private GradientDrawable shape(int fill, int radius, int border) {
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(fill);
-        shape.setCornerRadius(dp(radius));
-        if (border != 0) shape.setStroke(dp(1), border);
-        return shape;
+        return UiKit.surface(controls == null ? this : controls, fill, radius, border);
     }
 
     private RippleDrawable ripple(int fill, int radius) {

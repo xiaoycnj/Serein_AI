@@ -21,6 +21,7 @@ final class ChatStore {
         final ChatHistory history;
         long updatedAt;
         boolean pinned;
+        boolean archived;
         ChatContext.Checkpoint checkpoint;
 
         Chat(String id, String title, long updatedAt, ChatHistory history) {
@@ -62,6 +63,7 @@ final class ChatStore {
                 ChatHistory history = ChatHistory.read(entry.getJSONArray("turns"), entry.optInt("leaf", -1));
                 Chat chat = new Chat(entry.getString("id"), entry.getString("title"), entry.getLong("updated"), history);
                 chat.pinned = entry.optBoolean("pinned", false);
+                chat.archived = entry.optBoolean("archived", false);
                 JSONObject checkpoint = entry.optJSONObject("checkpoint");
                 if (checkpoint != null) chat.checkpoint = new ChatContext.Checkpoint(checkpoint.getString("scope"),
                         checkpoint.getInt("through"), checkpoint.getString("text"));
@@ -75,10 +77,50 @@ final class ChatStore {
     }
 
     void open(Chat chat) {
+        if (chat != null && !recent.contains(chat)) throw new IllegalStateException("会话不存在");
         Chat previous = active;
         active = chat;
         try { save(); }
         catch (RuntimeException error) { active = previous; throw error; }
+    }
+
+    void archive(Chat chat, boolean archived) {
+        if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
+        if (chat.archived == archived) return;
+        Chat previous = active;
+        chat.archived = archived;
+        if (archived && active == chat) active = null;
+        try { save(); }
+        catch (RuntimeException error) {
+            chat.archived = !archived;
+            active = previous;
+            throw error;
+        }
+    }
+
+    void fork(Chat source, int through) {
+        if (source != active || source == null || through < 0) throw new IllegalStateException("会话已切换");
+        List<Integer> path = source.history.path(source.history.leaf());
+        int end = path.indexOf(through);
+        if (end < 0) throw new IllegalStateException("消息不在当前版本内");
+        ChatHistory history = new ChatHistory();
+        for (int i = 0; i <= end; i++) {
+            // Turns and card states are immutable; each history owns its own nodes.
+            history.append(history.leaf(), source.history.turn(path.get(i)));
+        }
+        String suffix = " · 分支";
+        int max = MAX_TITLE_LENGTH - suffix.length();
+        String title = source.title;
+        if (title.codePointCount(0, title.length()) > max) title = title.substring(0, title.offsetByCodePoints(0, max));
+        Chat branch = new Chat(UUID.randomUUID().toString(), title + suffix, System.currentTimeMillis(), history);
+        active = branch;
+        insertRecent(branch);
+        try { save(); }
+        catch (RuntimeException error) {
+            recent.remove(branch);
+            active = source;
+            throw error;
+        }
     }
 
     void rename(Chat chat, String name) {
@@ -204,6 +246,7 @@ final class ChatStore {
                 JSONObject row = new JSONObject().put("id", chat.id).put("title", chat.title)
                         .put("updated", chat.updatedAt).put("pinned", chat.pinned)
                         .put("turns", chat.history.write()).put("leaf", chat.history.leaf());
+                if (chat.archived) row.put("archived", true);
                 if (chat.checkpoint != null) row.put("checkpoint", new JSONObject().put("scope", chat.checkpoint.scope())
                         .put("through", chat.checkpoint.through()).put("text", chat.checkpoint.text()));
                 saved.put(row);

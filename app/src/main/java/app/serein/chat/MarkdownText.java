@@ -14,34 +14,31 @@ import android.text.style.TypefaceSpan;
 import android.text.style.URLSpan;
 
 import org.commonmark.ext.gfm.strikethrough.Strikethrough;
-import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
+import org.commonmark.ext.gfm.tables.TableBlock;
 import org.commonmark.ext.gfm.tables.TableCell;
 import org.commonmark.ext.gfm.tables.TableRow;
-import org.commonmark.ext.gfm.tables.TablesExtension;
 import org.commonmark.node.*;
-import org.commonmark.parser.Parser;
 
 import java.net.URI;
-import java.util.List;
 
 final class MarkdownText {
-    private static final Parser PARSER = Parser.builder()
-            .extensions(List.of(StrikethroughExtension.create(), TablesExtension.create())).build();
+    record Rendered(SpannableStringBuilder text, boolean hasArtifacts) {}
 
-    static SpannableStringBuilder render(String markdown, int ink, int secondary, int code, int inset) {
+    static Rendered render(String markdown, int ink, int secondary, int code, int inset) {
         Renderer renderer = new Renderer(ink, secondary, code, inset);
-        renderer.children(PARSER.parse(markdown), 0);
+        renderer.children(ChatArtifacts.parse(markdown), 0);
         var text = renderer.text;
         while (text.length() != 0 && text.charAt(text.length() - 1) == '\n') {
             text.delete(text.length() - 1, text.length());
         }
         // Preserve content made entirely of Markdown syntax or reference definitions.
-        return text.length() == 0 ? new SpannableStringBuilder(markdown) : text;
+        return new Rendered(text.length() == 0 ? new SpannableStringBuilder(markdown) : text, renderer.hasArtifacts);
     }
 
     private static final class Renderer {
         final SpannableStringBuilder text = new SpannableStringBuilder();
         final int ink, secondary, code, inset;
+        boolean hasArtifacts;
 
         Renderer(int ink, int secondary, int code, int inset) {
             this.ink = ink;
@@ -57,6 +54,9 @@ final class MarkdownText {
 
         void append(Node node, int depth) {
             int start = text.length();
+            if (node instanceof FencedCodeBlock || node instanceof IndentedCodeBlock || node instanceof TableBlock) {
+                hasArtifacts = true;
+            }
             if (node instanceof Text literal) text.append(literal.getLiteral());
             else if (node instanceof Code inline) {
                 text.append(inline.getLiteral());
