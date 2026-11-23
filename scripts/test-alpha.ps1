@@ -114,8 +114,8 @@ function Restore-SelectedModel {
     } | Select-Object -First 1
     if (!$chooser) { Write-Warning 'Could not restore the previous model because the test did not finish on the chat screen.'; return }
     Tap-Node $chooser '选择模型'
-    Type-Text '搜索模型或服务商' $script:OriginalModelTitle
-    Tap-Label $script:OriginalModelTitle
+    Type-Text '搜索模型' $script:OriginalModelTitle
+    Tap-Node (Find-Element (Get-Screen) $script:OriginalModelTitle 'android.widget.TextView') $script:OriginalModelTitle
     Wait-Visible "选择模型，当前 $($script:OriginalModelTitle)"
     Write-Output "PASS: restored the previous model ($($script:OriginalModelTitle))"
 }
@@ -203,6 +203,7 @@ function Test-ProviderControls {
     Tap-Node $modelId 'vendor/gpt-5-mini'
     Invoke-Adb shell input keyevent KEYCODE_MOVE_HOME | Out-Null
     for ($i = 0; $i -lt 7; $i++) { Invoke-Adb shell input keyevent KEYCODE_FORWARD_DEL | Out-Null }
+    Invoke-Adb shell input keyevent KEYCODE_BACK | Out-Null
     Assert-Visible '已匹配本地目录'
     Assert-Visible 'GPT-5 mini'
     Assert-Visible 'OpenAI'
@@ -230,8 +231,13 @@ function Test-ProviderControls {
     Tap-Label '关闭侧栏'
     $chooser = (Get-Screen).SelectNodes('//node') | Where-Object { $_.package -eq $package -and $_.'content-desc' -like '选择模型，当前 *' } | Select-Object -First 1
     Tap-Node $chooser '选择模型'
-    Type-Text '搜索模型或服务商' 'gpt-5-mini'
+    Type-Text '搜索模型' 'no-match-serein'
+    Assert-Visible '没有匹配的模型'
+    Invoke-Adb shell input keyevent KEYCODE_MOVE_END | Out-Null
+    for ($i = 0; $i -lt 'no-match-serein'.Length; $i++) { Invoke-Adb shell input keyevent KEYCODE_DEL | Out-Null }
+    Invoke-Adb shell input text 'gpt-5-mini' | Out-Null
     Assert-Visible 'GPT-5 mini QA'
+    if (Find-Element (Get-Screen) 'Claude Sonnet 4.6') { throw 'Search did not filter the model list.' }
     if ($PickerScreenshot) {
         $remote = '/data/local/tmp/serein-picker.png'
         try {
@@ -239,13 +245,6 @@ function Test-ProviderControls {
             Invoke-Adb pull $remote $PickerScreenshot | Out-Null
         } finally { Invoke-Adb shell rm -f $remote | Out-Null }
     }
-    Type-Text '搜索模型或服务商' 'no-match-serein'
-    Assert-Visible '没有匹配的模型'
-    Invoke-Adb shell input keyevent KEYCODE_MOVE_END | Out-Null
-    for ($i = 0; $i -lt 'no-match-serein'.Length; $i++) { Invoke-Adb shell input keyevent KEYCODE_DEL | Out-Null }
-    Invoke-Adb shell input text 'gpt-5-mini' | Out-Null
-    Assert-Visible 'GPT-5 mini QA'
-    if (Find-Element (Get-Screen) 'Claude Sonnet 4.6') { throw 'Search did not filter the model list.' }
     Tap-Label 'GPT-5 mini QA'
     Assert-Visible '选择模型，当前 GPT-5 mini QA'
     if (Find-Element (Get-Screen) '思考强度') { throw 'Reasoning slider visible without the keyboard.' }

@@ -143,7 +143,7 @@ public final class MainActivity extends Activity {
     private FrameLayout root;
     private View composerAnchor;
     private Snackbar activeNotice;
-    private final List<AlertDialog> openDialogs = new ArrayList<>();
+    private final List<Dialog> openDialogs = new ArrayList<>();
     private FrameLayout drawer;
     private View drawerRail;
     private final DrawerSwipe drawerSwipe = new DrawerSwipe();
@@ -335,7 +335,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         if (activeNotice != null) activeNotice.dismiss();
-        for (AlertDialog dialog : List.copyOf(openDialogs)) if (dialog.isShowing()) dialog.dismiss();
+        for (Dialog dialog : List.copyOf(openDialogs)) if (dialog.isShowing()) dialog.dismiss();
         openDialogs.clear();
         if (streamReply != null) cancelStream(streamReply);
         if (appUpdate != null) {
@@ -2688,40 +2688,52 @@ public final class MainActivity extends Activity {
     }
 
     private void chooseModel() {
+        if (isFinishing() || isDestroyed()) return;
         hideKeyboard();
+        if (activeNotice != null) activeNotice.dismiss();
         AppCompatDialog dialog = new AppCompatDialog(controls);
         dialog.supportRequestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout sheet = column();
-        sheet.setPadding(dp(16), dp(8), dp(16), dp(8));
+        sheet.setPadding(dp(12), dp(8), dp(12), dp(8));
         sheet.setFocusableInTouchMode(true);
+        sheet.setAccessibilityPaneTitle("选择模型");
         sheet.setBackground(UiKit.sheetSurface(controls, panel, line));
 
-        LinearLayout heading = row();
-        heading.setPadding(dp(4), 0, 0, 0);
-        heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text("选择模型", 21, ink, true);
-        title.setAccessibilityHeading(true);
-        heading.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
-        heading.addView(iconButton("关闭模型选择", R.drawable.ic_close, muted, 0, dialog::dismiss));
-        sheet.addView(heading);
+        LinearLayout toolbar = row();
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout searchBar = row();
         searchBar.setGravity(Gravity.CENTER_VERTICAL);
-        searchBar.setPadding(dp(12), 0, dp(10), 0);
-        searchBar.setMinimumHeight(dp(48));
+        searchBar.setPadding(dp(10), 0, dp(6), 0);
         searchBar.setBackground(shape(paper, 8, line));
-        searchBar.addView(icon(R.drawable.ic_search, 19, muted));
+        searchBar.addView(icon(R.drawable.ic_search, 18, muted));
         EditText search = UiKit.inlineField(controls);
-        search.setHint("搜索模型或服务商");
+        search.setHint("搜索模型");
         search.setTextColor(ink);
         search.setHintTextColor(muted);
         search.setSingleLine(true);
-        searchBar.addView(search);
-        search.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP, 1));
         search.setBackground(null);
         search.setMinimumHeight(dp(48));
-        search.setPadding(dp(10), dp(4), dp(4), dp(4));
+        search.setPadding(dp(8), dp(4), 0, dp(4));
         search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        sheet.addView(searchBar, new LinearLayout.LayoutParams(MATCH, WRAP));
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                | android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                | android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        search.setOnEditorActionListener((view, action, event) -> {
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return false;
+            var controller = search.getWindowInsetsController();
+            if (controller != null) controller.hide(WindowInsets.Type.ime());
+            return true;
+        });
+        searchBar.addView(search, new LinearLayout.LayoutParams(0, WRAP, 1));
+        LinearLayout.LayoutParams searchPosition = new LinearLayout.LayoutParams(0, WRAP, 1);
+        searchPosition.setMarginEnd(dp(4));
+        toolbar.addView(searchBar, searchPosition);
+        toolbar.addView(iconButton("服务商设置", R.drawable.ic_settings, ink, 0, () -> {
+            dialog.dismiss();
+            go("providers");
+        }));
+        toolbar.addView(iconButton("关闭模型选择", R.drawable.ic_close, ink, 0, dialog::dismiss));
+        sheet.addView(toolbar, new LinearLayout.LayoutParams(MATCH, WRAP));
         space(sheet, 8);
 
         FrameLayout resultArea = new FrameLayout(this);
@@ -2774,10 +2786,6 @@ public final class MainActivity extends Activity {
             adapter.notifyDataSetChanged();
             list.setSelection(0);
         });
-        rule(sheet);
-        View settings = action("服务商设置", R.drawable.ic_settings, 0, ink, 0);
-        settings.setOnClickListener(v -> { dialog.dismiss(); go("providers"); });
-        sheet.addView(settings, new LinearLayout.LayoutParams(MATCH, WRAP));
         dialog.setContentView(sheet);
         sheet.requestFocus();
         dialog.setCanceledOnTouchOutside(true);
@@ -2788,10 +2796,14 @@ public final class MainActivity extends Activity {
         window.setDimAmount(.35f);
         window.setWindowAnimations(0);
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        dialog.show();
         var bounds = getWindowManager().getCurrentWindowMetrics().getBounds();
-        int contentHeight = Math.min(496, 192 + 62 * options.size());
-        window.setLayout(Math.min(bounds.width(), dp(520)), Math.min(dp(contentHeight), Math.round(bounds.height() * .65f)));
+        boolean shortWindow = bounds.height() < dp(520);
+        int contentHeight = Math.min(496, 76 + 64 * options.size());
+        int heightLimit = shortWindow ? bounds.height() : Math.round(bounds.height() * .65f);
+        int preferredHeight = dp(shortWindow ? 496 : Math.max(280, contentHeight));
+        window.setLayout(Math.min(bounds.width(), dp(520)), Math.min(preferredHeight, heightLimit));
+        dialog.show();
+        trackDialog(dialog);
         Motion.enter(sheet, 0, dp(24), .99f, motionEnabled());
     }
 
@@ -3130,13 +3142,16 @@ public final class MainActivity extends Activity {
         View host = root;
         View anchor = drawer == null ? composerAnchor : null;
         if (!openDialogs.isEmpty()) {
-            AlertDialog top = openDialogs.get(openDialogs.size() - 1);
+            Dialog top = openDialogs.get(openDialogs.size() - 1);
             View content = top.findViewById(android.R.id.content);
             if (content != null && content.isAttachedToWindow()) {
                 host = content;
-                anchor = top.getButton(AlertDialog.BUTTON_POSITIVE);
-                if (anchor == null || anchor.getVisibility() != View.VISIBLE) {
-                    anchor = top.getButton(AlertDialog.BUTTON_NEGATIVE);
+                anchor = null;
+                if (top instanceof AlertDialog alert) {
+                    anchor = alert.getButton(AlertDialog.BUTTON_POSITIVE);
+                    if (anchor == null || anchor.getVisibility() != View.VISIBLE) {
+                        anchor = alert.getButton(AlertDialog.BUTTON_NEGATIVE);
+                    }
                 }
                 if (anchor != null && anchor.getVisibility() != View.VISIBLE) anchor = null;
             }
@@ -3213,10 +3228,14 @@ public final class MainActivity extends Activity {
     }
 
     private void showDialog(AlertDialog dialog, boolean secure) {
-        openDialogs.removeIf(existing -> !existing.isShowing());
         if (activeNotice != null) activeNotice.dismiss();
         UiOverlays.show(dialog, secure, motionEnabled(), controls == null ? color("#235543") : controlAccent());
+        trackDialog(dialog);
+    }
+
+    private void trackDialog(Dialog dialog) {
         openDialogs.add(dialog);
+        dialog.setOnDismissListener(dismissed -> openDialogs.remove(dialog));
     }
 
     private void settings(LinearLayout body) {
