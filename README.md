@@ -37,13 +37,14 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.10 | 统一常用浮层与容器 | [控件预设](docs/UI-KIT.md)用于聊天与设置，构建脚本要求 APK 小于 64 MB | 使用现有 Material 依赖，保留系统文件选择器 |
 | Alpha 0.0.11 | 简化侧栏操作 | 对话左侧内缘右滑打开、侧栏内左滑收起；保留返回键和按钮 | 不占用 Android 系统返回手势区 |
 | Alpha 0.0.12 | 让自动模型路由配合聊天选项 | 开启交互卡片时，只自动选择目录标记支持函数调用的模型；手动指定思考强度时使用当前模型 | 路由在本机运行，仅在当前服务商内选择 |
+| Alpha 0.0.13 | 提升外观自定义深度 | 设置页实时预览主题、配色、壁纸、字体和圆角；重启后恢复设置 | 壁纸与字体保存在应用私有目录 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.12
+## Alpha 0.0.13
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 从对话内容区靠左、避开屏幕最外侧的位置向右滑可打开侧栏；在侧栏内向左滑可收起。「设置 → 外观 → 侧栏滑动手势」可关闭，键盘展开和触摸探索时不接管手势。
@@ -62,13 +63,16 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 - 模型选择器沿用聊天主题，显示品牌图标、当前模型和服务商。搜索可按名称、模型 ID、发布方或服务商筛选。
 - APK 内置 601 个模型 ID 和显式别名，按完整 ID 区分大小写匹配。手动添加和首次拉取时可预填模型名称、发布方与图标。部分已知官方端点会预填思考参数，其他端点沿用服务商默认值。模型设置可手动修改这些字段，重复拉取会保留已有配置。
 - 在模型设置中选择适用的思考参数。键盘展开时，输入框上方显示档位滑块。选择「默认」时由服务商决定。请按所用模型的文档选择 `reasoning_effort` 或 DeepSeek 档位。
-- 外观包含自定义主题色、纯色与渐变背景、本机图片，以及实色、扁平和磨砂材质。列表、按钮和页面切换使用非线性与弹簧反馈，尊重应用和系统的减少动效设置。
+- 「设置 → 外观」可选雨松、星雾、暖纸、海雾四个预设，每款都支持浅色、深色和跟随系统。可分别设置界面底色、强调色、消息气泡、输入框和聊天正文颜色。
+- 本机壁纸支持铺满、完整显示、不透明度和模糊。磨砂材质支持调整表面不透明度，正文和控件在低对比时使用可读配色或实色底。
+- 正文字号、消息与输入框圆角独立调节。可使用系统、衬线、等宽字体，或导入 12 MiB 以内的 TTF/OTF。设置页预览随调整更新，支持恢复默认外观。
+- 列表、按钮和页面切换使用非线性与弹簧反馈，尊重应用和系统的减少动效设置。
 - 升级首次启动时会加密迁移会话。会话和服务商配置使用 Android Keystore 管理的密钥加密，应用备份已禁用，在线请求通过 HTTPS 发送给用户选择的服务商。
 - 可用 Android Studio 打开根工程。Windows 脚本使用同一套 Gradle Wrapper（8.13），需要 JDK 17+、Android SDK Platform 36 和 Build-Tools 35.0.0。首次构建需下载 Gradle 和依赖。
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.12.apk
+adb install -r .\outputs\Serein-Alpha-0.0.13.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
@@ -88,6 +92,7 @@ Serein 的原创代码和资源采用 [MIT 许可证](LICENSE)。第三方资源
 - 应用通用图标使用 [Lucide v0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0)。
 - 侧栏入口采用 [Heroicons v2.2.0（MIT）](https://github.com/tailwindlabs/heroicons/tree/v2.2.0)，手势开关使用 [SVG Repo 的 Swipe Right Gesture（CC0）](https://www.svgrepo.com/svg/325667/swipe-right-gesture)。仅随包分发两个矢量，无运行时依赖。
 - 本地路由的候选能力筛选与档位排序参考 [AutoModelRouter（CC0 1.0）](https://github.com/xiaoycnj/AutoModelRouter/tree/9ba754d02e08bc1069b0f629e2cbcd5981100500)，由应用内的 Java 代码执行。
+- 主题预设、壁纸与排版设置参考 AstraAgent 的 [主题风格](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/js/features/theme-styles.js) 和 [个性化设置](https://github.com/xiaoycnj/AstraAgent/blob/c74966f83ed35275aace67c11abc48fbaea52b32/web/assets/js/features/personalization.js)，由 Android 原生界面渲染。
 - Markdown 解析使用 [commonmark-java 0.24.0（BSD 2-Clause）](https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.24.0)。
 - 通用控件使用 [Material Components for Android 1.13.0（Apache 2.0）](https://github.com/material-components/material-components-android/releases/tag/1.13.0)。
 - 搜索图标来自 [Tabler Icons v3.41.0（MIT）](https://github.com/tabler/tabler-icons/tree/v3.41.0)，设计资源也可通过 [官方 Figma 插件](https://www.figma.com/community/plugin/1169807996149376642/Tabler-Icons) 获取。

@@ -5,7 +5,7 @@ $adb = (Get-Command adb).Source
 $package = 'app.serein.chat'
 $device = @(if ($Serial) { '-s'; $Serial } else { '-d' })
 $dump = '/data/local/tmp/serein-smoke.xml'
-$testMessage = 'Alpha012-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
+$testMessage = 'Alpha013-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
 $samplePrompt = '帮我理顺今天的安排'
 $sampleReply = '先写下今天非做不可的一件事'
 $script:OriginalModelTitle = $null
@@ -45,6 +45,22 @@ function Find-Element([xml]$Screen, [string]$Label, [string]$Class) {
 
 function Assert-Visible([string]$Label) {
     if (!(Find-Element (Get-Screen) $Label)) { throw "Expected to find '$Label' in Serein." }
+}
+
+function Scroll-AppearanceTo([string]$Label) {
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        $screen = Get-Screen
+        if (Find-Element $screen $Label) { return }
+        $scroll = $screen.SelectNodes('//node') | Where-Object {
+            $_.package -eq $package -and $_.class -eq 'android.widget.ScrollView'
+        } | Select-Object -First 1
+        if (!$scroll -or $scroll.bounds -notmatch '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { break }
+        $x = ([int]$Matches[1] + [int]$Matches[3]) -shr 1
+        $top = [int]$Matches[2]
+        $height = [int]$Matches[4] - $top
+        Invoke-Adb shell input swipe $x ([int]($top + .8 * $height)) $x ([int]($top + .25 * $height)) 250 | Out-Null
+    }
+    throw "Expected to find '$Label' in appearance settings."
 }
 
 function Find-ContainingText([xml]$Screen, [string]$Fragment) {
@@ -257,14 +273,10 @@ function Test-ProviderControls {
     Write-Output 'PASS: model and provider settings survived restart; test configuration removed'
     Tap-Label '返回'
     Tap-Label '外观'
-    Assert-Visible '自定义主题色'
-    Tap-Label '聊天材质'
-    Assert-Visible '磨砂'
+    Assert-Visible '一起整理今天的计划'
+    Tap-Label '自定义配色'
     Tap-Label '取消'
-    Tap-Label '背景'
-    Assert-Visible '选择本机图片'
-    Assert-Visible '主题渐变'
-    Tap-Label '取消'
+    Scroll-AppearanceTo '输入框圆角'
     Tap-Label '返回'
     Tap-Label '返回'
     Tap-Label '关闭侧栏'
@@ -359,10 +371,10 @@ try {
         if (!(Find-Element $settings $section)) { throw "Settings is missing '$section'." }
     }
     Tap-Label '外观'
-    Assert-Visible '减少动效'
+    Scroll-AppearanceTo '减少动效'
     Tap-Label '返回'
     Tap-Label '关于'
-    Assert-Visible 'Alpha 0.0.12 · Android 13+'
+    Assert-Visible 'Alpha 0.0.13 · Android 13+'
     Tap-Label '返回'
     Tap-Label '自定义插件'
     $extensions = Get-Screen

@@ -52,6 +52,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.RelativeLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
@@ -101,7 +102,7 @@ public final class MainActivity extends Activity {
 
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
-            new Section("appearance", "外观", "主题与动效", R.drawable.ic_sun),
+            new Section("appearance", "外观", "主题、壁纸与排版", R.drawable.ic_sun),
             new Section("plugins", "自定义插件", "上下文压缩与模型路由", R.drawable.ic_puzzle),
             new Section("about", "关于", "", R.drawable.ic_info),
             new Section("policy", "相关政策", "本机数据", R.drawable.ic_shield),
@@ -154,8 +155,13 @@ public final class MainActivity extends Activity {
     private LinearLayout liveActions;
     private String liveSource;
     private Bitmap wallpaper;
+    private Typeface importedFont;
+    private boolean importingAppearance;
+    private ScrollView appearanceScroll;
+    private Runnable updateAppearancePreview;
     private ChatArtifacts.Document pendingExport;
     private static final int PICK_BACKGROUND = 870;
+    private static final int PICK_CHAT_FONT = 872;
     private String page = CHAT;
     private String draft = "";
     private boolean backRegistered;
@@ -296,22 +302,16 @@ public final class MainActivity extends Activity {
         night.uiMode = dark ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
         controls = new ContextThemeWrapper(this, R.style.SereinTheme);
         ((ContextThemeWrapper) controls).applyOverrideConfiguration(night);
-        paper = color(dark ? "#151C18" : "#F8FAF7");
-        panel = color(dark ? "#1C2520" : "#FFFFFF");
-        ink = color(dark ? "#E7EEE9" : "#192722");
-        muted = color(dark ? "#AFC1B5" : "#52655B");
-        line = color(dark ? "#3B4940" : "#DDE5DF");
-        tint = color(dark ? "#293F33" : "#E1EEE6");
-        accent = color(dark ? "#ABCDB9" : "#235543");
-        onAccent = dark ? color("#193023") : Color.WHITE;
-        String custom = prefs.getString("theme_accent", "");
-        if (custom.matches("#[0-9A-Fa-f]{6}")) {
-            accent = color(custom);
-            double luminance = .2126 * linearChannel(Color.red(accent)) + .7152 * linearChannel(Color.green(accent))
-                    + .0722 * linearChannel(Color.blue(accent));
-            onAccent = luminance > .179 ? Color.BLACK : Color.WHITE;
-            tint = blend(paper, accent, dark ? .22f : .12f);
-        }
+        var palette = Appearance.palette(dark, appearancePreset(),
+                prefs.getString("theme_base", ""), prefs.getString("theme_accent", ""));
+        paper = palette.paper();
+        panel = palette.panel();
+        ink = palette.ink();
+        muted = palette.muted();
+        line = palette.line();
+        tint = palette.tint();
+        accent = palette.accent();
+        onAccent = palette.onAccent();
         int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                 | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
         getWindow().getInsetsController().setSystemBarsAppearance(dark ? 0 : lightBars, lightBars);
@@ -319,12 +319,15 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
+        int appearancePosition = page.equals("appearance") && appearanceScroll != null ? appearanceScroll.getScrollY() : 0;
+        appearanceScroll = null;
+        updateAppearancePreview = null;
         if (activeNotice != null) activeNotice.dismiss();
         cancelHistorySearch();
         palette();
         root.removeAllViews();
         root.setBackgroundColor(paper);
-        if (page.equals(CHAT)) drawBackground();
+        if (page.equals(CHAT)) setChatBackground(root);
         screen = column();
         screen.setFocusableInTouchMode(true);
         root.addView(screen, new FrameLayout.LayoutParams(MATCH, MATCH));
@@ -346,11 +349,16 @@ public final class MainActivity extends Activity {
         if (page.equals(CHAT)) renderChat();
         else renderPage();
         screen.requestFocus();
+        if (appearanceScroll != null && appearancePosition > 0) {
+            ScrollView target = appearanceScroll;
+            target.post(() -> target.scrollTo(0, appearancePosition));
+        }
         updateBackCallback();
     }
 
     private void renderChat() {
         LinearLayout toolbar = toolbar();
+        if (visibleWallpaper() || glassMaterial()) toolbar.setBackgroundColor(chatSurface(paper, muted));
         MaterialButton history = action("会话", R.drawable.ic_sidebar_menu, 0, ink, 0);
         history.setOnClickListener(v -> openDrawer());
         toolbar.addView(history, new LinearLayout.LayoutParams(WRAP, WRAP));
@@ -405,17 +413,21 @@ public final class MainActivity extends Activity {
         composerAnchor = composer;
         composer.setGravity(Gravity.CENTER_VERTICAL);
         composer.setPadding(dp(12), dp(3), dp(4), dp(3));
-        String material = prefs.getString("material", "solid");
-        int surface = material.equals("glass") ? (panel & 0x00ffffff) | 0xe5000000 : panel;
-        composer.setBackground(shape(surface, material.equals("flat") ? 8 : 27, line));
+        int fill = composerFill();
+        int foreground = chatInk(fill);
+        int surface = chatSurface(fill, foreground);
+        int hint = Appearance.readable(muted, foreground, fill);
+        if ((surface >>> 24) < 255) hint = foreground;
+        composer.setBackground(shape(surface, composerRadius(), line));
         input = UiKit.inlineField(controls);
         input.setHint("发消息");
-        input.setTextColor(ink);
-        input.setHintTextColor(muted);
-        input.setTextSize(16);
+        input.setTextColor(foreground);
+        input.setHintTextColor(hint);
+        input.setTextSize(chatTextSize());
         input.setMinHeight(dp(48));
         input.setMaxLines(5);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setTypeface(chatFont());
         input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         input.setBackground(null);
         input.setPadding(dp(4), dp(9), dp(6), dp(9));
@@ -542,17 +554,18 @@ public final class MainActivity extends Activity {
             welcome.addView(logo(78));
             TextView prompt = text("今天想聊什么？", 24, ink, true);
             prompt.setGravity(Gravity.CENTER);
+            protectOnWallpaper(prompt);
             space(welcome, 14);
             welcome.addView(prompt);
             space(welcome, 18);
-            View sample = action("帮我理顺今天的安排", 0, 0, accent, tint);
+            View sample = action("帮我理顺今天的安排", 0, 0, Appearance.readable(accent, ink, tint), tint);
             sample.setOnClickListener(v -> {
                 input.setText("帮我理顺今天的安排");
                 input.setSelection(input.length());
             });
             welcome.addView(sample, new LinearLayout.LayoutParams(WRAP, WRAP));
             if (providers.choice() == null) {
-                View demo = action("试试交互清单", 0, 0, ink, 0);
+                View demo = action("试试交互清单", 0, 0, ink, visibleWallpaper() ? paper : 0);
                 demo.setOnClickListener(v -> submit("试试交互清单", -1, false));
                 welcome.addView(demo);
             }
@@ -580,6 +593,7 @@ public final class MainActivity extends Activity {
                 if (status != null) {
                     TextView marker = text(status, 13, muted, false);
                     marker.setPadding(dp(8), dp(4), dp(8), 0);
+                    protectOnWallpaper(marker);
                     answer.addView(marker);
                 }
                 messageActions(answer, id, markdown.hasArtifacts());
@@ -599,6 +613,7 @@ public final class MainActivity extends Activity {
             TextView status = text(replyStatus, 14, muted, false);
             status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             status.setPadding(0, dp(6), 0, dp(8));
+            protectOnWallpaper(status);
             transcript.addView(status);
             liveStatus = status;
         }
@@ -650,31 +665,38 @@ public final class MainActivity extends Activity {
         byline.addView(logo(28));
         TextView name = text(model, 13, ink, true);
         name.setPadding(dp(6), 0, 0, 0);
+        protectOnWallpaper(name);
         byline.addView(name);
         transcript.addView(byline);
         ReplyText reply = new ReplyText(this);
-        reply.setTextColor(ink);
-        reply.setTextSize(16);
+        int foreground = chatInk(paper);
+        reply.setTextColor(foreground);
+        reply.setTextSize(chatTextSize());
+        reply.setTypeface(chatFont());
         reply.setTextIsSelectable(!live);
         if (!live) reply.setMovementMethod(LinkMovementMethod.getInstance());
-        int linkColor = contrast(accent, paper) >= 4.5 ? accent : ink;
-        reply.setLinkTextColor(linkColor);
+        reply.setLinkTextColor(Appearance.readable(accent, foreground, paper));
         reply.setLineSpacing(dp(4), 1);
         reply.setPadding(dp(8), dp(6), dp(8), dp(5));
-        if (wallpaper != null && prefs.getString("background", "plain").equals("image")) {
-            reply.setBackground(shape(paper, 8, 0));
-        }
+        protectOnWallpaper(reply);
         transcript.addView(reply, new LinearLayout.LayoutParams(MATCH, WRAP));
         return reply;
     }
 
     private MarkdownText.Rendered markdown(String source) {
-        return MarkdownText.render(source, ink, muted, tint, dp(9));
+        return markdown(source, paper);
     }
 
-    private static double contrast(int first, int second) {
-        double light = Color.luminance(first), dark = Color.luminance(second);
-        return (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05);
+    private MarkdownText.Rendered markdown(String source, int fill) {
+        int foreground = chatInk(fill);
+        int secondary = Appearance.readable(muted, foreground, fill);
+        int code = Appearance.blend(fill, foreground, .08f);
+        if (Appearance.contrast(foreground, code) < 4.5) code = fill;
+        return MarkdownText.render(source, foreground, secondary, code, dp(9));
+    }
+
+    private void protectOnWallpaper(View content) {
+        if (visibleWallpaper()) content.setBackground(shape(paper, 8, 0));
     }
 
     private void showStream(StreamReply stream, String source, boolean allowOpening) {
@@ -756,15 +778,18 @@ public final class MainActivity extends Activity {
     }
 
     private View messageBubble(LinearLayout transcript, String message) {
-        TextView user = text("", 16, ink, false);
+        int fill = messageFill();
+        int foreground = chatInk(fill);
+        TextView user = text("", chatTextSize(), foreground, false);
+        user.setTypeface(chatFont());
         user.setTextIsSelectable(true);
-        user.setText(markdown(message).text(), TextView.BufferType.SPANNABLE);
+        user.setText(markdown(message, fill).text(), TextView.BufferType.SPANNABLE);
         user.setMovementMethod(LinkMovementMethod.getInstance());
-        user.setLinkTextColor(contrast(accent, tint) >= 4.5 ? accent : ink);
+        user.setLinkTextColor(Appearance.readable(accent, foreground, fill));
         user.setLineSpacing(dp(4), 1);
         user.setPadding(dp(14), dp(10), dp(14), dp(10));
         user.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * .76));
-        user.setBackground(shape(tint, 18, 0));
+        user.setBackground(shape(fill, messageRadius(), 0));
         LinearLayout.LayoutParams bubble = new LinearLayout.LayoutParams(WRAP, WRAP);
         bubble.gravity = Gravity.END;
         transcript.addView(user, bubble);
@@ -774,6 +799,7 @@ public final class MainActivity extends Activity {
     private void messageActions(LinearLayout transcript, int id, boolean hasArtifacts) {
         LinearLayout actions = row();
         actions.setGravity(Gravity.CENTER_VERTICAL);
+        protectOnWallpaper(actions);
         ChatStore.Chat chat = store.active;
         ChatHistory history = chat.history;
         ChatHistory.Turn turn = history.turn(id);
@@ -1266,7 +1292,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout rail = column();
         drawerRail = rail;
-        rail.setBackgroundColor(panel);
+        rail.setBackgroundColor(chatSurface(panel, muted));
         rail.setClickable(true);
         rail.setAccessibilityPaneTitle("会话侧栏");
         rail.setPadding(dp(14), dp(6), dp(14), dp(10));
@@ -1286,7 +1312,7 @@ public final class MainActivity extends Activity {
         header.addView(close);
         rail.addView(header);
         space(rail, 16);
-        View start = action("新建聊天", R.drawable.ic_plus, 0, accent, tint);
+        View start = action("新建聊天", R.drawable.ic_plus, 0, Appearance.readable(accent, ink, tint), tint);
         start.setOnClickListener(v -> newChat());
         rail.addView(start, new LinearLayout.LayoutParams(MATCH, WRAP));
         space(rail, 14);
@@ -1541,6 +1567,10 @@ public final class MainActivity extends Activity {
             return;
         }
         ScrollView scroll = scroll();
+        if (page.equals("appearance")) {
+            appearanceScroll = scroll;
+            addAppearancePreview();
+        }
         LinearLayout body = column();
         body.setPadding(dp(20), dp(12), dp(20), dp(24));
         scroll.addView(body);
@@ -1557,7 +1587,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.12 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.13 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
@@ -2279,59 +2309,71 @@ public final class MainActivity extends Activity {
             }
         });
         body.addView(options);
-        space(body, 19);
-        sectionTitle(body, "主题色");
-        LinearLayout swatches = row();
-        String[] colors = {"#235543", "#33577B", "#76516B", "#8A4B35"};
-        String[] swatchNames = {"雨松绿", "雾蓝", "暮紫", "陶土"};
-        String selectedAccent = prefs.getString("theme_accent", "");
-        for (int i = 0; i < colors.length; i++) {
-            String value = colors[i];
-            FrameLayout target = new FrameLayout(this);
-            target.setContentDescription(swatchNames[i]);
-            target.setSelected(value.equalsIgnoreCase(selectedAccent));
-            target.setFocusable(true);
-            target.setBackground(ripple(0, 8));
-            View dot = new View(this);
-            dot.setBackground(shape(color(value), 18, target.isSelected() ? ink : 0));
-            target.addView(dot, new FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER));
-            if (target.isSelected()) target.addView(icon(R.drawable.ic_check, 17, Color.WHITE),
-                    new FrameLayout.LayoutParams(dp(17), dp(17), Gravity.CENTER));
-            target.setOnClickListener(v -> setAppearance("theme_accent", value));
-            Motion.press(target, this::motionEnabled);
-            swatches.addView(target, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        }
-        body.addView(swatches);
-        addRow(body, "自定义主题色", selectedAccent.isEmpty() ? "默认" : selectedAccent,
-                R.drawable.ic_sun, this::editAccent);
+        space(body, 12);
+        var presets = Appearance.Preset.values();
+        String[] styles = new String[presets.length];
+        for (int i = 0; i < presets.length; i++) styles[i] = presets[i].label;
+        dropdown(body, "主题预设", styles, appearancePreset().ordinal(),
+                index -> setAppearance("appearance_preset", presets[index].name()));
+        addRow(body, "自定义配色", "底色、强调色、气泡、输入框与正文", R.drawable.ic_sun, this::editAppearanceColors);
         space(body, 14);
         sectionTitle(body, "聊天背景");
-        String background = prefs.getString("background", "plain");
+        String background = backgroundMode();
         dropdown(body, "背景", new String[]{"纯色", "主题渐变", "本机图片"},
                 background.equals("image") ? 2 : background.equals("wash") ? 1 : 0, index -> {
-                    if (index == 2) pickWallpaper();
-                    else setAppearance("background", index == 0 ? "plain" : "wash");
+                    if (index == 2 && !Wallpaper.file(this).isFile()) pickWallpaper();
+                    else setAppearance("background", new String[]{"plain", "wash", "image"}[index]);
                 });
+        if (background.equals("image")) {
+            addRow(body, "更换本机背景图", "", R.drawable.ic_file, this::pickWallpaper);
+            dropdown(body, "图片填充", new String[]{"铺满", "完整显示"}, wallpaperContain() ? 1 : 0,
+                    index -> setAppearance("wallpaper_fit", index == 1 ? "contain" : "cover"));
+            appearanceSlider(body, "壁纸不透明度", "wallpaper_opacity", wallpaperOpacity(), 0, 100, "%");
+            appearanceSlider(body, "壁纸模糊", "wallpaper_blur", wallpaperBlur(), 0, 30, " dp");
+        }
         if (Wallpaper.file(this).isFile()) {
             addRow(body, "移除本机背景图", "", R.drawable.ic_close, () -> {
+                if (appearanceImportBusy()) return;
                 if (!Wallpaper.file(this).delete()) { notice("无法移除背景图"); return; }
                 wallpaper = null;
-                if (background.equals("image")) setAppearance("background", "plain");
-                else render();
+                if (backgroundMode().equals("image")) prefs.edit().remove("background").apply();
+                render();
             });
         }
         space(body, 14);
-        sectionTitle(body, "材质");
+        sectionTitle(body, "材质与排版");
         String material = prefs.getString("material", "solid");
         String[] materials = {"solid", "flat", "glass"};
         dropdown(body, "聊天材质", new String[]{"实色", "扁平", "磨砂"},
                 material.equals("glass") ? 2 : material.equals("flat") ? 1 : 0,
                 index -> setAppearance("material", materials[index]));
-        View preview = text("Serein", 17, ink, true);
-        preview.setPadding(dp(14), dp(12), dp(14), dp(12));
-        preview.setBackground(shape(material.equals("flat") ? paper : tint, material.equals("flat") ? 8 : 24, line));
-        body.addView(preview);
-        space(body, 24);
+        if (glassMaterial()) appearanceSlider(body, "表面不透明度", "surface_opacity", surfaceOpacity(), 70, 100, "%");
+        appearanceSlider(body, "正文字号", "chat_text_size", chatTextSize(), 12, 24, " sp");
+        appearanceSlider(body, "消息圆角", "message_radius", messageRadius(), 0, 32, " dp");
+        appearanceSlider(body, "输入框圆角", "composer_radius", composerRadius(), 0, 40, " dp");
+        String[] fonts = {"system", "serif", "monospace", "local"};
+        int currentFont = switch (prefs.getString("chat_font", "system")) {
+            case "serif" -> 1;
+            case "monospace" -> 2;
+            case "local" -> LocalChatFont.file(this).isFile() ? 3 : 0;
+            default -> 0;
+        };
+        dropdown(body, "聊天字体", new String[]{"系统默认", "衬线", "等宽", "本机字体"}, currentFont, index -> {
+            if (index == 3 && !LocalChatFont.file(this).isFile()) pickChatFont();
+            else setAppearance("chat_font", fonts[index]);
+        });
+        if (LocalChatFont.file(this).isFile()) {
+            addRow(body, "更换本机字体", "TTF / OTF", R.drawable.ic_file, this::pickChatFont);
+            addRow(body, "移除本机字体", "", R.drawable.ic_close, () -> {
+                if (appearanceImportBusy()) return;
+                if (!LocalChatFont.file(this).delete()) { notice("无法移除本机字体"); return; }
+                importedFont = null;
+                if (currentFont == 3) prefs.edit().remove("chat_font").apply();
+                render();
+            });
+        }
+        space(body, 14);
+        sectionTitle(body, "动效与手势");
         MaterialSwitch reduce = settingSwitch(body, "减少动效", prefs.getBoolean("reduce_motion", false));
         reduce.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("reduce_motion", checked).apply());
         MaterialSwitch swipe = settingSwitch(body, "侧栏滑动手势", prefs.getBoolean("drawer_swipe", true));
@@ -2340,6 +2382,84 @@ public final class MainActivity extends Activity {
         swipe.setCompoundDrawablePadding(dp(8));
         swipe.setCompoundDrawablesRelativeWithIntrinsicBounds(glyph, null, null, null);
         swipe.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("drawer_swipe", checked).apply());
+        addRow(body, "恢复默认外观", "", R.drawable.ic_refresh, this::confirmAppearanceReset);
+    }
+
+    private void appearanceSlider(LinearLayout body, String label, String key, int current, int min, int max, String unit) {
+        TextView caption = text(label + " · " + current + unit, 14, ink, false);
+        body.addView(caption);
+        Slider slider = UiKit.slider(controls, controlAccent(), current - min, max - min);
+        slider.setContentDescription(label);
+        slider.setLabelFormatter(value -> (Math.round(value) + min) + unit);
+        slider.addOnChangeListener((view, value, fromUser) -> {
+            if (!fromUser) return;
+            int selection = Math.round(value) + min;
+            prefs.edit().putInt(key, selection).apply();
+            caption.setText(label + " · " + selection + unit);
+            if (updateAppearancePreview != null) updateAppearancePreview.run();
+        });
+        body.addView(slider, new LinearLayout.LayoutParams(MATCH, dp(52)));
+    }
+
+    private void addAppearancePreview() {
+        RelativeLayout frame = new RelativeLayout(this);
+        frame.setClipToOutline(true);
+        frame.setBackground(shape(paper, 14, line));
+        var position = new LinearLayout.LayoutParams(MATCH, WRAP);
+        position.setMargins(dp(20), 0, dp(20), dp(6));
+        screen.addView(frame, position);
+
+        LinearLayout sample = column();
+        sample.setId(View.generateViewId());
+        sample.setPadding(dp(12), dp(6), dp(12), dp(9));
+        FrameLayout backdrop = new FrameLayout(this);
+        var backdropPosition = new RelativeLayout.LayoutParams(MATCH, 0);
+        backdropPosition.addRule(RelativeLayout.ALIGN_TOP, sample.getId());
+        backdropPosition.addRule(RelativeLayout.ALIGN_BOTTOM, sample.getId());
+        frame.addView(backdrop, backdropPosition);
+        ImageView image = setChatBackground(backdrop);
+        frame.addView(sample, new RelativeLayout.LayoutParams(MATCH, WRAP));
+        TextView prompt = text("一起整理今天的计划", 16, ink, false);
+        prompt.setPadding(dp(10), dp(4), dp(10), dp(4));
+        LinearLayout.LayoutParams bubble = new LinearLayout.LayoutParams(WRAP, WRAP);
+        bubble.gravity = Gravity.END;
+        sample.addView(prompt, bubble);
+
+        TextView reply = text("先从最重要的一件事开始。", 16, ink, false);
+        reply.setPadding(dp(8), dp(5), dp(8), dp(5));
+        sample.addView(reply, new LinearLayout.LayoutParams(WRAP, WRAP));
+        LinearLayout composer = row();
+        composer.setGravity(Gravity.CENTER_VERTICAL);
+        composer.setPadding(dp(10), dp(3), dp(6), dp(3));
+        TextView hint = text("发消息", 16, muted, false);
+        composer.addView(hint, new LinearLayout.LayoutParams(0, WRAP, 1));
+        ImageView send = icon(R.drawable.ic_send, 20, onAccent);
+        send.setPadding(dp(5), dp(5), dp(5), dp(5));
+        send.setBackground(shape(accent, 15, 0));
+        composer.addView(send, new LinearLayout.LayoutParams(dp(30), dp(30)));
+        sample.addView(composer, new LinearLayout.LayoutParams(MATCH, WRAP));
+        for (TextView label : new TextView[]{prompt, reply, hint}) {
+            label.setSingleLine(true);
+            label.setEllipsize(TextUtils.TruncateAt.END);
+        }
+        updateAppearancePreview = () -> {
+            if (image != null) applyWallpaperEffects(image);
+            int fill = messageFill();
+            prompt.setBackground(shape(fill, messageRadius(), 0));
+            prompt.setTextColor(chatInk(fill));
+            reply.setTextColor(chatInk(paper));
+            reply.setBackground(visibleWallpaper() ? shape(paper, 8, 0) : null);
+            int composerFill = composerFill();
+            int foreground = chatInk(composerFill);
+            composer.setBackground(shape(chatSurface(composerFill, foreground), composerRadius(), line));
+            hint.setTextColor(foreground);
+            Typeface font = chatFont();
+            for (TextView label : new TextView[]{prompt, reply, hint}) {
+                label.setTextSize(chatTextSize());
+                label.setTypeface(font);
+            }
+        };
+        updateAppearancePreview.run();
     }
 
     private void dropdown(LinearLayout body, String label, String[] values, int selected,
@@ -2353,23 +2473,62 @@ public final class MainActivity extends Activity {
         render();
     }
 
-    private void editAccent() {
+    private void editAppearanceColors() {
         LinearLayout form = dialogBody();
-        EditText value = field(form, "#RRGGBB", prefs.getString("theme_accent", ""), false);
-        saveForm("自定义主题色", form, false, () -> {
-            String hex = value.getText().toString().strip();
-            if (!hex.matches("#?[0-9A-Fa-f]{6}")) throw new IllegalArgumentException("请输入六位十六进制颜色。");
-            setAppearance("theme_accent", (hex.startsWith("#") ? hex : "#" + hex).toUpperCase(Locale.ROOT));
+        form.addView(text("使用 #RRGGBB，留空使用预设。正文会根据背景保持可读。", 14, muted, false));
+        String[] keys = {"theme_base", "theme_accent", "message_color", "composer_color", "chat_text_color"};
+        String[] labels = {"界面底色", "强调色", "消息气泡", "输入框", "聊天正文"};
+        EditText[] inputs = new EditText[keys.length];
+        for (int i = 0; i < keys.length; i++) inputs[i] = field(form, labels[i], prefs.getString(keys[i], ""), false);
+        saveForm("自定义配色", form, false, () -> {
+            SharedPreferences.Editor edit = prefs.edit();
+            for (int i = 0; i < keys.length; i++) {
+                String hex = Appearance.colorInput(inputs[i].getText().toString());
+                if (hex.isEmpty()) edit.remove(keys[i]);
+                else edit.putString(keys[i], hex);
+            }
+            edit.apply();
+            render();
         }, null);
     }
 
+    private void confirmAppearanceReset() {
+        if (appearanceImportBusy()) return;
+        showDialog(dialogBuilder().setTitle("恢复默认外观？")
+                .setMessage("主题、聊天背景、材质和排版将恢复默认。已导入的图片和字体可再次选择。")
+                .setNegativeButton("取消", null).setPositiveButton("恢复", (dialog, index) -> {
+                    var edit = prefs.edit();
+                    for (String key : new String[]{"theme", "appearance_preset", "theme_base", "theme_accent", "background",
+                            "wallpaper_fit", "wallpaper_opacity", "wallpaper_blur", "material", "surface_opacity", "chat_font",
+                            "chat_text_size", "chat_text_color", "message_radius", "message_color", "composer_radius", "composer_color"}) {
+                        edit.remove(key);
+                    }
+                    edit.apply();
+                    if (appearanceScroll != null) appearanceScroll.scrollTo(0, 0);
+                    render();
+                }).create(), false);
+    }
+
     private void pickWallpaper() {
+        if (appearanceImportBusy()) return;
         Intent picker = new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*");
         if (picker.resolveActivity(getPackageManager()) == null) {
             picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*");
         }
         try { startActivityForResult(picker, PICK_BACKGROUND); }
         catch (android.content.ActivityNotFoundException error) { notice("找不到系统图片选择器"); }
+    }
+
+    private void pickChatFont() {
+        if (appearanceImportBusy()) return;
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+        try { startActivityForResult(picker, PICK_CHAT_FONT); }
+        catch (android.content.ActivityNotFoundException | SecurityException error) { notice("找不到系统文件选择器"); }
+    }
+
+    private boolean appearanceImportBusy() {
+        if (importingAppearance) notice("正在导入外观文件");
+        return importingAppearance;
     }
 
     private void confirmConversationExport(ChatStore.Chat chat) {
@@ -2424,54 +2583,105 @@ public final class MainActivity extends Activity {
             finishExport(result, data);
             return;
         }
-        if (request != PICK_BACKGROUND || result != RESULT_OK || data == null || data.getData() == null) return;
+        if ((request != PICK_BACKGROUND && request != PICK_CHAT_FONT) || result != RESULT_OK
+                || data == null || data.getData() == null || appearanceImportBusy()) return;
         android.net.Uri uri = data.getData();
-        worker.execute(() -> {
+        if (!"content".equals(uri.getScheme())) { notice("无法读取所选文件"); return; }
+        boolean font = request == PICK_CHAT_FONT;
+        importingAppearance = true;
+        localWork.execute(() -> {
             try {
-                Wallpaper.importImage(this, uri);
-                prefs.edit().putString("background", "image").apply();
+                if (font) LocalChatFont.importFont(this, uri);
+                else Wallpaper.importImage(this, uri);
+                prefs.edit().putString(font ? "chat_font" : "background", font ? "local" : "image").apply();
                 runOnUiThread(() -> {
+                    importingAppearance = false;
                     if (isDestroyed()) return;
-                    wallpaper = null;
+                    if (font) importedFont = null;
+                    else wallpaper = null;
                     render();
                 });
             } catch (IOException | RuntimeException error) {
-                runOnUiThread(() -> { if (!isDestroyed()) notice("无法导入背景图"); });
+                runOnUiThread(() -> {
+                    importingAppearance = false;
+                    if (!isDestroyed()) notice(font ? "无法导入字体，请选择 12 MiB 以内的 TTF 或 OTF 文件" : "无法导入背景图");
+                });
             }
         });
     }
 
-    private void drawBackground() {
-        String background = prefs.getString("background", "plain");
+    private Appearance.Preset appearancePreset() {
+        return Appearance.Preset.read(prefs.getString("appearance_preset", ""));
+    }
+
+    private String backgroundMode() { return prefs.getString("background", "plain"); }
+    private boolean wallpaperContain() { return prefs.getString("wallpaper_fit", "cover").equals("contain"); }
+    private int wallpaperOpacity() { return Appearance.clamp(prefs.getInt("wallpaper_opacity", 21), 0, 100); }
+    private int wallpaperBlur() { return Appearance.clamp(prefs.getInt("wallpaper_blur", glassMaterial() ? 12 : 0), 0, 30); }
+    private boolean visibleWallpaper() { return wallpaper != null && backgroundMode().equals("image") && wallpaperOpacity() > 0; }
+    private boolean glassMaterial() { return prefs.getString("material", "solid").equals("glass"); }
+    private int surfaceOpacity() { return Appearance.clamp(prefs.getInt("surface_opacity", 90), 70, 100); }
+    private int chatTextSize() { return Appearance.clamp(prefs.getInt("chat_text_size", 16), 12, 24); }
+    private int messageRadius() { return Appearance.clamp(prefs.getInt("message_radius", 18), 0, 32); }
+
+    private int composerRadius() {
+        int fallback = prefs.getString("material", "solid").equals("flat") ? 8 : 27;
+        return Appearance.clamp(prefs.getInt("composer_radius", fallback), 0, 40);
+    }
+
+    private int composerFill() { return Appearance.color(prefs.getString("composer_color", ""), panel); }
+    private int messageFill() { return Appearance.color(prefs.getString("message_color", ""), tint); }
+
+    private int chatInk(int fill) {
+        return Appearance.readable(Appearance.color(prefs.getString("chat_text_color", ""), ink), ink, fill);
+    }
+
+    private int chatSurface(int fill, int foreground) {
+        return glassMaterial() ? Appearance.glass(fill, foreground, surfaceOpacity()) : fill;
+    }
+
+    private Typeface chatFont() {
+        return switch (prefs.getString("chat_font", "system")) {
+            case "serif" -> Typeface.SERIF;
+            case "monospace" -> Typeface.MONOSPACE;
+            case "local" -> {
+                if (importedFont == null) {
+                    try { importedFont = LocalChatFont.load(this); }
+                    catch (RuntimeException ignored) { importedFont = Typeface.DEFAULT; }
+                    if (importedFont == null) importedFont = Typeface.DEFAULT;
+                }
+                yield importedFont;
+            }
+            default -> Typeface.DEFAULT;
+        };
+    }
+
+    private ImageView setChatBackground(FrameLayout target) {
+        String background = backgroundMode();
+        target.setBackgroundColor(paper);
         if (background.equals("wash")) {
-            root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{blend(paper, accent, .15f), paper, tint}));
+            target.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{Appearance.blend(paper, accent, .15f), paper, tint}));
         }
-        if (!background.equals("image")) return;
+        if (!background.equals("image")) return null;
         if (wallpaper == null) wallpaper = BitmapFactory.decodeFile(Wallpaper.file(this).getAbsolutePath());
-        if (wallpaper == null) return;
+        if (wallpaper == null) return null;
         ImageView image = new ImageView(this);
         image.setImageBitmap(wallpaper);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        if (prefs.getString("material", "solid").equals("glass")) {
-            image.setRenderEffect(RenderEffect.createBlurEffect(dp(12), dp(12), Shader.TileMode.CLAMP));
-        }
         image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        root.addView(image, new FrameLayout.LayoutParams(MATCH, MATCH));
-        View scrim = new View(this);
-        scrim.setBackgroundColor((paper & 0x00ffffff) | 0xca000000);
-        root.addView(scrim, new FrameLayout.LayoutParams(MATCH, MATCH));
+        applyWallpaperEffects(image);
+        target.addView(image, new FrameLayout.LayoutParams(MATCH, MATCH));
+        return image;
     }
 
-    private static double linearChannel(int channel) {
-        double s = channel / 255.0;
-        return s <= .04045 ? s / 12.92 : Math.pow((s + .055) / 1.055, 2.4);
-    }
-
-    private static int blend(int a, int b, float amount) {
-        return Color.rgb(Math.round(Color.red(a) * (1 - amount) + Color.red(b) * amount),
-                Math.round(Color.green(a) * (1 - amount) + Color.green(b) * amount),
-                Math.round(Color.blue(a) * (1 - amount) + Color.blue(b) * amount));
+    private void applyWallpaperEffects(ImageView image) {
+        image.setAlpha(wallpaperOpacity() / 100f);
+        image.setScaleType(wallpaperContain() ? ImageView.ScaleType.FIT_CENTER : ImageView.ScaleType.CENTER_CROP);
+        int blur = wallpaperBlur();
+        if (!Integer.valueOf(blur).equals(image.getTag())) {
+            image.setTag(blur);
+            image.setRenderEffect(blur == 0 ? null : RenderEffect.createBlurEffect(dp(blur), dp(blur), Shader.TileMode.CLAMP));
+        }
     }
 
     private LinearLayout toolbar() {
@@ -2514,7 +2724,7 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private int controlAccent() { return contrast(accent, panel) >= 3 ? accent : ink; }
+    private int controlAccent() { return Appearance.contrast(accent, panel) >= 3 ? accent : ink; }
 
     private ImageView icon(int glyph, int size, int foreground) {
         ImageView icon = new ImageView(this);
