@@ -192,12 +192,16 @@ final class ChatArtifacts {
 
     private static void writeMessage(Writer out, String markdown) throws IOException {
         out.write(markdown);
+        out.write(closingFence(markdown));
+    }
+
+    static String closingFence(String markdown) {
         // A streamed reply may end inside a top-level fence; keep later turns outside it.
-        if (!markdown.contains("~~~") && !markdown.contains("```")) return;
+        if (!markdown.contains("~~~") && !markdown.contains("```")) return "";
         if (parse(markdown).getLastChild() instanceof FencedCodeBlock fence && fence.getClosingFenceLength() == null) {
-            out.write('\n');
-            out.write(fence.getFenceCharacter().repeat(fence.getOpeningFenceLength()));
+            return "\n" + fence.getFenceCharacter().repeat(fence.getOpeningFenceLength());
         }
+        return "";
     }
 
     private static String heading(String value) {

@@ -99,6 +99,7 @@ public final class MainActivity extends Activity {
     private record Section(String id, String title, String summary, int icon) {}
     private record TurnAnchors(View prompt, View answer) {}
     private record MenuItem(String label, Runnable action) {}
+    private record SearchRequest(Providers.Provider provider, String query) {}
 
     private static final Section[] SECTIONS = {
             new Section("providers", "服务商连接", "模型与 API Key", R.drawable.ic_link),
@@ -142,6 +143,7 @@ public final class MainActivity extends Activity {
     private EditText input;
     private View reasoningRow;
     private MaterialButton sendButton;
+    private MaterialButton webSearchButton;
     private boolean imeVisible;
     private boolean sending;
     private String pendingPrompt;
@@ -337,6 +339,7 @@ public final class MainActivity extends Activity {
         composerAnchor = null;
         reasoningRow = null;
         sendButton = null;
+        webSearchButton = null;
         chatScroll = null;
         turnAnchors.clear();
         latestButton = null;
@@ -436,6 +439,11 @@ public final class MainActivity extends Activity {
         input.setEnabled(!sending);
         composer.addView(input, new LinearLayout.LayoutParams(0, WRAP, 1));
 
+        webSearchButton = iconButton("联网搜索", R.drawable.ic_search, foreground, 0, () ->
+                showWebSearch(draft.strip(), store.active == null ? -1 : store.active.history.leaf(), true,
+                        WebSearch.suggestedQuery(draft)));
+        composer.addView(webSearchButton);
+
         MaterialButton send = iconButton("发送", R.drawable.ic_send, onAccent, accent, () -> {
             if (streamReply != null) stopReply();
             else send();
@@ -469,6 +477,7 @@ public final class MainActivity extends Activity {
         }
         button.setEnabled(ready);
         button.setAlpha(ready ? 1f : .44f);
+        if (webSearchButton != null) webSearchButton.setEnabled(!sending);
     }
 
     private boolean motionEnabled() {
@@ -622,10 +631,11 @@ public final class MainActivity extends Activity {
             transcript.addView(liveActions);
         } else if (retryReply != null && retryReply.matches(store.active)) {
             ReplyRetry attempt = retryReply;
-            View retry = action("重试", R.drawable.ic_refresh, 0, ink, tint);
+            View retry = action(attempt.searchQuery() == null ? "重试" : "重试搜索", R.drawable.ic_refresh, 0, ink, tint);
             retry.setOnClickListener(v -> {
                 if (!sending && retryReply == attempt && attempt.matches(store.active)) {
-                    submit(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft));
+                    if (attempt.searchQuery() == null) submit(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft));
+                    else showWebSearch(attempt.prompt(), attempt.parent(), attempt.consumesDraft(draft), attempt.searchQuery());
                 }
             });
             transcript.addView(retry, new LinearLayout.LayoutParams(WRAP, WRAP));
@@ -810,7 +820,8 @@ public final class MainActivity extends Activity {
         actions.addView(iconButton("编辑提问", R.drawable.ic_pencil, muted, 0, () -> editPrompt(id)));
         actions.addView(iconButton("重新生成", R.drawable.ic_refresh, muted, 0, () -> {
             if (sending) { notice("请先停止当前生成"); return; }
-            submit(turn.prompt(), history.parent(id), false);
+            if (turn.searchQuery() == null) submit(turn.prompt(), history.parent(id), false);
+            else showWebSearch(turn.prompt(), history.parent(id), false, turn.searchQuery());
         }));
         actions.addView(iconButton("消息更多操作", R.drawable.ic_more, muted, 0,
                 () -> showMessageMenu(chat, id, hasArtifacts)));
@@ -961,16 +972,22 @@ public final class MainActivity extends Activity {
         if (sending) { notice("请先停止当前生成"); return; }
         ChatHistory history = store.active.history;
         LinearLayout body = dialogBody();
-        EditText edit = multilineField(body, "提问", history.turn(id).prompt(), 4000);
+        ChatHistory.Turn turn = history.turn(id);
+        EditText edit = multilineField(body, "提问", turn.prompt(), 4000);
         ScrollView scroll = scroll();
         scroll.addView(body);
         AlertDialog dialog = dialogBuilder().setTitle("编辑提问").setView(scroll)
-                .setNegativeButton("取消", null).setPositiveButton("发送", null).create();
+                .setNegativeButton("取消", null).setPositiveButton(turn.searchQuery() == null ? "发送" : "继续搜索", null).create();
         showDialog(dialog, true);
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String value = edit.getText().toString().strip();
             if (value.isEmpty()) { edit.setError("请输入提问"); return; }
-            submit(value, history.parent(id), false, dialog::dismiss);
+            if (turn.searchQuery() == null) submit(value, history.parent(id), false, dialog::dismiss);
+            else {
+                dialog.dismiss();
+                showWebSearch(value, history.parent(id), false,
+                        value.equals(turn.prompt()) ? turn.searchQuery() : WebSearch.suggestedQuery(value));
+            }
         });
     }
 
@@ -982,14 +999,75 @@ public final class MainActivity extends Activity {
 
     private boolean autoRoute() { return prefs.getBoolean("auto_route", false); }
 
+    private Providers.Provider searchProvider(Providers.Choice choice) {
+        if (choice != null && WebSearch.officialProvider(choice.provider().base) && !choice.provider().secret().isBlank()) {
+            return choice.provider();
+        }
+        for (Providers.Provider provider : providers.all) {
+            if (WebSearch.officialProvider(provider.base) && !provider.secret().isBlank()) return provider;
+        }
+        return null;
+    }
+
+    private void showWebSearch(String message, int parent, boolean fromComposer, String suggestedQuery) {
+        if (sending) return;
+        Providers.Choice choice = providers.choice();
+        Providers.Provider provider = searchProvider(choice);
+        LinearLayout form = dialogBody();
+        String detail = provider == null ? "配置官方 DeepSeek 服务商和 API Key 后即可在聊天中搜索。也可以用浏览器打开 Bing。"
+                : "检索词会发送给 DeepSeek，搜索可能单独计费。" + (choice == null
+                ? "本轮直接显示搜索来源和摘要。" : "结果摘要会发给当前聊天模型。")
+                + "\n在 Bing 打开时，检索词会发送给 Bing。";
+        form.addView(text(detail, 14, muted, false));
+        space(form, 10);
+        EditText query = field(form, "检索词", suggestedQuery, false);
+        query.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2 * WebSearch.QUERY_LIMIT)});
+        ScrollView scroll = scroll();
+        scroll.addView(form);
+        AlertDialog dialog = dialogBuilder().setTitle("联网搜索").setView(scroll)
+                .setNegativeButton("取消", null).setNeutralButton("在 Bing 打开", null)
+                .setPositiveButton("搜索并发送", null).create();
+        showDialog(dialog, true);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(provider != null);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            try {
+                String terms = WebSearch.checkedQuery(query.getText().toString());
+                dialog.dismiss();
+                submit(message.isBlank() ? terms : message, parent, fromComposer, () -> {}, new SearchRequest(provider, terms));
+            } catch (IllegalArgumentException error) { query.setError(error.getMessage()); }
+        });
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+            try {
+                String terms = WebSearch.checkedQuery(query.getText().toString());
+                var link = android.net.Uri.parse("https://www.bing.com/search").buildUpon()
+                        .appendQueryParameter("q", terms).build();
+                startActivity(new Intent(Intent.ACTION_VIEW, link));
+                dialog.dismiss();
+            } catch (IllegalArgumentException error) { query.setError(error.getMessage()); }
+            catch (android.content.ActivityNotFoundException | SecurityException error) { notice("无法打开浏览器"); }
+        });
+    }
+
     private void submit(String message, int parent, boolean fromComposer) {
         submit(message, parent, fromComposer, () -> {});
     }
 
     private void submit(String message, int parent, boolean fromComposer, Runnable accepted) {
+        submit(message, parent, fromComposer, accepted, null);
+    }
+
+    private void submit(String message, int parent, boolean fromComposer, Runnable accepted, SearchRequest search) {
         if (sending) return;
         Providers.Choice choice = providers.choice();
         if (choice == null) {
+            if (search != null) {
+                accepted.run();
+                startReply(message, "DeepSeek Search", parent, fromComposer, "正在搜索网页…", search.query(), stream -> {
+                    var hits = ModelApi.search(search.provider(), search.query(), stream.cancellation);
+                    stream.append(WebSearch.references(hits, true));
+                });
+                return;
+            }
             if (message.equals("试试交互清单")) {
                 accepted.run();
                 startReply(message, "Serein", parent, fromComposer, "等待 Serein 回复…", stream ->
@@ -1036,7 +1114,7 @@ public final class MainActivity extends Activity {
         Runnable send = () -> {
             accepted.run();
             sendOnline(target, message, parent, fromComposer, path, history,
-                    chat == null ? null : chat.checkpoint, account, compact, cards);
+                    chat == null ? null : chat.checkpoint, account, compact, cards, search);
         };
         if (!prefs.getBoolean(consent, false)) {
             showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
@@ -1071,34 +1149,52 @@ public final class MainActivity extends Activity {
 
     private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
                             List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
-                            String account, boolean compact, boolean iui) {
+                            String account, boolean compact, boolean iui, SearchRequest search) {
         int level = effort(choice);
         ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
         int inputLimit = entry == null ? 0 : entry.inputLimit();
-        boolean preparing = compact && ChatContext.estimate(history, account, message) > ChatContext.threshold(inputLimit);
+        long original = search == null && compact ? ChatContext.estimate(history, account, message) : 0;
+        boolean preparing = compact && original > ChatContext.threshold(inputLimit);
         String model = choice.model().title();
         String scope = choice.provider().id + "\n" + choice.provider().base + "\n" + choice.model().id();
-        startReply(message, model, parent, fromComposer, preparing ? "正在压缩较早的对话…" : "等待 " + model + " 回复…", stream -> {
+        String waiting = "等待 " + model + " 回复…";
+        String initial = search != null ? "正在搜索网页…" : preparing ? "正在压缩较早的对话…" : waiting;
+        startReply(message, model, parent, fromComposer, initial, search == null ? null : search.query(), stream -> {
+            String prompt = message;
+            if (search != null) {
+                stream.sources = ModelApi.search(search.provider(), search.query(), stream.cancellation);
+                prompt = WebSearch.groundedPrompt(message, stream.sources);
+            }
+            long tokens = search == null ? original : ChatContext.estimate(history, account, prompt);
+            boolean summarize = compact && tokens > ChatContext.threshold(inputLimit);
+            if (search != null && !summarize && inputLimit > 0 && tokens > ChatContext.budget(inputLimit)) {
+                throw new IOException("模型的上下文空间不足以容纳聊天和搜索资料，请选择上下文更大的模型。");
+            }
             ChatContext.Context context = new ChatContext.Context(history, "", null);
-            if (preparing) {
+            if (summarize) {
+                if (search != null) updateReplyStatus(stream, "正在压缩较早的对话…");
                 try {
-                    context = ChatContext.prepare(history, path, account, message, inputLimit, scope, checkpoint,
+                    context = ChatContext.prepare(history, path, account, prompt, inputLimit, scope, checkpoint,
                             (previous, chunk) -> ModelApi.summarize(choice, previous, chunk, stream.cancellation));
                 } catch (Exception error) {
                     stream.cancellation.check();
-                    if (inputLimit == 0 || ChatContext.estimate(history, account, message) > ChatContext.budget(inputLimit)) throw error;
+                    if (inputLimit == 0 || tokens > ChatContext.budget(inputLimit)) throw error;
                     ui.post(() -> { if (streamReply == stream) notice("摘要生成失败，本轮使用完整历史"); });
                 }
-                ui.post(() -> {
-                    if (streamReply != stream) return;
-                    replyStatus = "等待 " + model + " 回复…";
-                    if (liveStatus != null) liveStatus.setText(replyStatus);
-                });
             }
+            if (search != null || summarize) updateReplyStatus(stream, waiting);
             stream.cancellation.check();
             stream.checkpoint = context.checkpoint();
-            stream.card = ModelApi.chat(choice, context.recent(), message, level, account, context.summary(),
+            stream.card = ModelApi.chat(choice, context.recent(), prompt, level, account, context.summary(),
                     iui, stream.cancellation, stream::append);
+        });
+    }
+
+    private void updateReplyStatus(StreamReply stream, String status) {
+        ui.post(() -> {
+            if (streamReply != stream) return;
+            replyStatus = status;
+            if (liveStatus != null) liveStatus.setText(status);
         });
     }
 
@@ -1112,6 +1208,7 @@ public final class MainActivity extends Activity {
         final String model;
         final int parent;
         final boolean fromComposer;
+        final String searchQuery;
         final ModelApi.Cancellation cancellation = new ModelApi.Cancellation();
         final StringBuilder content = new StringBuilder();
         final Choreographer frames = Choreographer.getInstance();
@@ -1123,11 +1220,13 @@ public final class MainActivity extends Activity {
         long nextRefresh;
         volatile ChatContext.Checkpoint checkpoint;
         volatile ChatCard card;
+        volatile List<WebSearch.Hit> sources = List.of();
 
-        StreamReply(String model, int parent, boolean fromComposer) {
+        StreamReply(String model, int parent, boolean fromComposer, String searchQuery) {
             this.model = model;
             this.parent = parent;
             this.fromComposer = fromComposer;
+            this.searchQuery = searchQuery;
         }
 
         synchronized String snapshot() { return content.toString(); }
@@ -1160,7 +1259,12 @@ public final class MainActivity extends Activity {
     }
 
     private void startReply(String message, String model, int parent, boolean fromComposer, String status, ReplySource source) {
-        StreamReply stream = new StreamReply(model, parent, fromComposer);
+        startReply(message, model, parent, fromComposer, status, null, source);
+    }
+
+    private void startReply(String message, String model, int parent, boolean fromComposer, String status, String searchQuery,
+                            ReplySource source) {
+        StreamReply stream = new StreamReply(model, parent, fromComposer, searchQuery);
         streamReply = stream;
         sending = true;
         pendingPrompt = message;
@@ -1216,6 +1320,9 @@ public final class MainActivity extends Activity {
         String message = pendingPrompt;
         String reply = stream.snapshot();
         ChatCard card = outcome == ChatHistory.ReplyState.COMPLETE ? stream.card : null;
+        if ((!reply.isBlank() || card != null) && !stream.sources.isEmpty()) {
+            reply += ChatArtifacts.closingFence(reply) + "\n\n" + WebSearch.references(stream.sources, false);
+        }
         showStream(stream, reply, outcome == ChatHistory.ReplyState.COMPLETE);
         streamReply = null;
         sending = false;
@@ -1225,10 +1332,10 @@ public final class MainActivity extends Activity {
         if (reply.isBlank() && card == null) {
             if (replyStatus == null) replyStatus = "模型没有返回可显示的文本。";
             if (stream.fromComposer) draft = message;
-            retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer);
+            retryReply = new ReplyRetry(store.active, stream.parent, message, stream.fromComposer, stream.searchQuery);
         } else {
             try {
-                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome);
+                store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome, stream.searchQuery);
                 saved = true;
                 clearReplyNotice();
             }
@@ -1587,11 +1694,11 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.13 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.14 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话历史、归档、交互卡片选择、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。搜索只在本机内存运行。通过系统文件选择器导出的文件不受应用内加密保护。在线聊天内容会通过 HTTPS 发给当前服务商。交互卡片选择不会随历史自动发送；加入草稿后仍需手动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
+            case "policy" -> body.addView(text("会话历史、归档、交互卡片选择、账户资料和服务商配置使用 Android Keystore 管理的密钥加密。会话搜索在本机内存运行。主动发起联网搜索时，检索词发送给 DeepSeek，结果摘要可能随本轮对话发送给当前聊天模型。选择在 Bing 打开时，浏览器会将检索词发送给 Bing。通过系统文件选择器导出的文件不受应用内加密保护。在线聊天内容会通过 HTTPS 发给当前服务商。交互卡片选择不会随历史自动发送；加入草稿后仍需手动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
@@ -2126,7 +2233,8 @@ public final class MainActivity extends Activity {
         if (error instanceof javax.net.ssl.SSLException) return "无法验证 HTTPS 连接。";
         if (error instanceof java.net.UnknownHostException) return "无法找到服务商地址。";
         if (error instanceof IOException && error.getMessage() != null &&
-                (error.getMessage().startsWith("服务商") || error.getMessage().startsWith("模型"))) return error.getMessage();
+                (error.getMessage().startsWith("服务商") || error.getMessage().startsWith("模型")
+                        || error.getMessage().startsWith("DeepSeek 搜索"))) return error.getMessage();
         return "请求失败，请检查连接与模型 ID。";
     }
 

@@ -102,20 +102,44 @@ final class ModelApi {
         return summary.toString();
     }
 
+    static List<WebSearch.Hit> search(Providers.Provider provider, String query, Cancellation cancellation)
+            throws IOException, JSONException {
+        if (!WebSearch.officialProvider(provider.base) || provider.secret().isBlank()) {
+            throw new IOException("DeepSeek 搜索需要官方服务商的 API Key。");
+        }
+        cancellation.check();
+        JSONObject body = WebSearch.payload(query);
+        HttpsURLConnection connection = openEndpoint(WebSearch.ENDPOINT, "application/json");
+        connection.setReadTimeout(25_000);
+        connection.setRequestProperty("Authorization", "Bearer " + provider.secret());
+        try {
+            cancellation.attach(connection);
+            writeJson(connection, body);
+            int status = connection.getResponseCode();
+            if (status != 200) throw WebSearch.failure(status);
+            try (InputStream input = connection.getInputStream()) {
+                var hits = WebSearch.hits(readJson(input));
+                cancellation.check();
+                if (hits.isEmpty()) throw new IOException("DeepSeek 搜索没有找到结果，请调整检索词。");
+                return hits;
+            } catch (JSONException error) {
+                throw new IOException("DeepSeek 搜索返回了无法读取的结果。", error);
+            }
+        } finally {
+            cancellation.detach();
+            connection.disconnect();
+        }
+    }
+
     private static void request(Providers.Provider provider, JSONObject payload, boolean stream,
                                 Cancellation cancellation, Consumer<String> delta, IuiCall call) throws IOException, JSONException {
-        byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
         boolean anthropic = provider.anthropicMessages();
         HttpsURLConnection connection = open(provider, anthropic ? "/messages" : "/chat/completions",
                 stream ? "text/event-stream, application/json" : "application/json");
         if (!stream) connection.setReadTimeout(15_000);
         try {
             cancellation.attach(connection);
-            connection.setRequestMethod("POST");
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            connection.setFixedLengthStreamingMode(body.length);
-            try (var output = connection.getOutputStream()) { output.write(body); }
+            writeJson(connection, payload);
             try (InputStream input = response(connection)) {
                 String contentType = connection.getContentType();
                 if (!stream || (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("json"))) {
@@ -130,6 +154,15 @@ final class ModelApi {
             cancellation.detach();
             connection.disconnect();
         }
+    }
+
+    private static void writeJson(HttpsURLConnection connection, JSONObject payload) throws IOException {
+        byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setFixedLengthStreamingMode(body.length);
+        try (var output = connection.getOutputStream()) { output.write(body); }
     }
 
     static JSONObject payload(Providers.Model model, List<ChatHistory.Turn> history, String prompt, int effort,
@@ -181,16 +214,21 @@ final class ModelApi {
     }
 
     private static HttpsURLConnection open(Providers.Provider provider, String path, String accept) throws IOException {
-        HttpsURLConnection connection = (HttpsURLConnection) URI.create(Providers.httpsBase(provider.base) + path).toURL().openConnection();
+        HttpsURLConnection connection = openEndpoint(Providers.httpsBase(provider.base) + path, accept);
+        if (provider.anthropicMessages()) {
+            connection.setRequestProperty("anthropic-version", "2023-06-01");
+            if (!provider.secret().isEmpty()) connection.setRequestProperty("x-api-key", provider.secret());
+        } else if (!provider.secret().isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + provider.secret());
+        return connection;
+    }
+
+    private static HttpsURLConnection openEndpoint(String endpoint, String accept) throws IOException {
+        HttpsURLConnection connection = (HttpsURLConnection) URI.create(endpoint).toURL().openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setUseCaches(false);
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(120_000);
         connection.setRequestProperty("Accept", accept);
-        if (provider.anthropicMessages()) {
-            connection.setRequestProperty("anthropic-version", "2023-06-01");
-            if (!provider.secret().isEmpty()) connection.setRequestProperty("x-api-key", provider.secret());
-        } else if (!provider.secret().isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + provider.secret());
         return connection;
     }
 

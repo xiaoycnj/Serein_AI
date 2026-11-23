@@ -183,6 +183,11 @@ final class ChatStore {
 
     void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState) {
+        append(parent, prompt, reply, model, checkpoint, card, replyState, null);
+    }
+
+    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+                ChatHistory.ReplyState replyState, String searchQuery) {
         Chat previous = active;
         if (active == null) {
             String firstLine = prompt.split("\\R", 2)[0];
@@ -194,7 +199,7 @@ final class ChatStore {
         int oldPosition = recent.indexOf(active);
         int oldLeaf = active.history.leaf();
         ChatContext.Checkpoint oldCheckpoint = active.checkpoint;
-        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState));
+        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState, searchQuery));
         if (checkpoint != null) active.checkpoint = checkpoint;
         active.updatedAt = System.currentTimeMillis();
         recent.remove(active);
@@ -223,7 +228,7 @@ final class ChatStore {
         Map<String, Object> state = new HashMap<>(previous.cardState());
         state.put(key, value);
         chat.history.replace(id, new ChatHistory.Turn(previous.prompt(), previous.reply(), previous.model(),
-                previous.card(), Map.copyOf(state), previous.replyState()));
+                previous.card(), Map.copyOf(state), previous.replyState(), previous.searchQuery()));
         try { save(); }
         catch (RuntimeException error) { chat.history.replace(id, previous); throw error; }
     }

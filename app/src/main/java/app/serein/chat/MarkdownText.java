@@ -160,7 +160,7 @@ final class MarkdownText {
         }
     }
 
-    private static boolean safeLink(String destination) {
+    static boolean safeLink(String destination) {
         try {
             URI uri = URI.create(destination);
             return uri.getHost() != null && uri.getRawUserInfo() == null
