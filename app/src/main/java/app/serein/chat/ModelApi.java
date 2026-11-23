@@ -205,7 +205,7 @@ final class ModelApi {
     private static void request(Providers.Provider provider, JSONObject payload, boolean stream,
                                 Cancellation cancellation, Consumer<String> delta, IuiCall call) throws IOException, JSONException {
         boolean anthropic = provider.anthropicMessages();
-        HttpsURLConnection connection = open(provider, anthropic ? "/messages" : "/chat/completions",
+        HttpsURLConnection connection = open(provider, chatPath(provider),
                 stream ? "text/event-stream, application/json" : "application/json");
         if (!stream) connection.setReadTimeout(15_000);
         try {
@@ -225,6 +225,10 @@ final class ModelApi {
             cancellation.detach();
             connection.disconnect();
         }
+    }
+
+    static String chatPath(Providers.Provider provider) {
+        return provider.anthropicMessages() ? "/messages" : "/chat/completions";
     }
 
     static void writeJson(HttpsURLConnection connection, JSONObject payload) throws IOException {

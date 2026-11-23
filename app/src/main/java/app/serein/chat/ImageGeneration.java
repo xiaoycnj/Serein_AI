@@ -9,6 +9,7 @@ import java.util.Base64;
 import java.util.Set;
 
 final class ImageGeneration {
+    static final String PATH = "/images/generations";
     static final int MAX_IMAGE = 10 * 1024 * 1024;
     private static final int MAX_JSON = (MAX_IMAGE + 2) / 3 * 4 + 65_536;
     private static final Set<String> SIZES = Set.of("", "1024x1024", "1024x1536", "1536x1024");
@@ -29,7 +30,7 @@ final class ImageGeneration {
     static byte[] generate(Request request, String prompt, ModelApi.Cancellation cancellation) throws Exception {
         if (request.provider().anthropicMessages()) throw new IOException("生图需要支持 Images API 的服务商。");
         cancellation.check();
-        var connection = ModelApi.open(request.provider(), "/images/generations", "application/json");
+        var connection = ModelApi.open(request.provider(), PATH, "application/json");
         connection.setReadTimeout(180_000);
         JSONObject result;
         try {

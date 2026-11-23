@@ -1538,34 +1538,33 @@ public final class MainActivity extends Activity {
                 ? (account.isBlank() ? "" : account + "\n\n") + ChatReferences.INSTRUCTIONS : account;
         boolean compact = prefs.getBoolean("auto_compact", false);
         boolean cards = prefs.getBoolean("chat_cards", false);
-        var web = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_web", false) ? searchProvider(choice) : null;
-        var image = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_image", false) ? imageToolRequest() : null;
-        boolean tools = cards || web != null || image != null || documentTools || memoryEnabled;
+        var availableSearch = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_web", false) ? searchProvider(choice) : null;
+        var availableImage = search == null && chatFiles.isEmpty() && prefs.getBoolean("chat_image", false) ? imageToolRequest() : null;
+        boolean tools = cards || availableSearch != null || availableImage != null || documentTools || memoryEnabled;
         Providers.Choice target = ChatAttachments.hasImages(chatFiles) ? choice
                 : routeChoice(choice, message, history, systemPrompt, compact, tools, ChatAttachments.estimate(chatFiles));
+        ModelCatalog.Entry entry = modelCatalog.find(target.model().id());
+        boolean supportsTools = entry == null || entry.supportsTools();
+        var web = supportsTools ? availableSearch : null;
+        var image = supportsTools ? availableImage : null;
+        var searchRecipient = search != null ? search.provider() : web;
         var local = new LocalChatContext(attached, chatFiles, documents, library, memoryEnabled,
                 manualScope.equals(chatScope(target)) ? manualScope : "");
-        String providerScope = target.provider().id + "_" + target.provider().base;
-        String consent = account.isEmpty() && !compact ? "consent_" + providerScope
-                : "consent_extensions_" + !account.isEmpty() + "_" + compact + "_" + providerScope;
-        if (hasFileContext || !library.isEmpty() || memoryEnabled) {
-            consent = "consent_local_" + hasFileContext + "_" + !library.isEmpty() + "_" + memoryEnabled + "_" + consent;
-        }
-        String consentKey = consent;
+        var delivery = new ChatDelivery(ChatDelivery.Destination.chat(target.provider()),
+                searchRecipient == null ? null : ChatDelivery.Destination.search(searchRecipient),
+                image == null ? null : ChatDelivery.Destination.image(image.provider()), search != null,
+                !chatFiles.isEmpty() || supportsTools && !documents.isEmpty(), supportsTools && !library.isEmpty(),
+                supportsTools && memoryEnabled, !account.isEmpty(), compact);
+        String consentKey = delivery.preferenceKey();
         Runnable send = () -> {
             accepted.run();
             sendOnline(target, message, parent, fromComposer, path, history,
                     chat == null ? null : chat.checkpoint, systemPrompt, compact, cards, search, web, image,
-                    local);
+                    local, entry);
         };
         if (!prefs.getBoolean(consentKey, false)) {
             showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
-                    .setMessage(target.provider().base + "\n\n将发送当前版本的聊天内容。"
-                            + (hasFileContext ? "随附图片和相关附件摘录可能发送给此服务商。" : "")
-                            + (library.isEmpty() ? "" : "模型检索命中的资料摘录会发送给此服务商。")
-                            + (memoryEnabled ? "模型检索命中的记忆也会发送给此服务商。" : "")
-                            + (account.isEmpty() ? "" : "已开启账户资料分享，名称和简介也会发送。")
-                            + (compact ? "长对话可能先发送旧消息生成摘要，产生额外请求和费用。" : ""))
+                    .setMessage(delivery.description())
                     .setNegativeButton("取消", null).setPositiveButton("发送", (dialog, item) -> {
                         prefs.edit().putBoolean(consentKey, true).apply();
                         send.run();
@@ -1596,11 +1595,10 @@ public final class MainActivity extends Activity {
     private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
                             List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
                             String account, boolean compact, boolean iui, SearchRequest search,
-                            Providers.Provider web, ImageGeneration.Request image, LocalChatContext local) {
+                            Providers.Provider web, ImageGeneration.Request image, LocalChatContext local, ModelCatalog.Entry entry) {
         List<ChatFile> attached = local.attached();
         List<ChatFile> chatFiles = local.recent();
         int level = effort(choice);
-        ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
         int inputLimit = entry == null ? 0 : entry.inputLimit();
         int capacity = ChatContext.budget(inputLimit);
         int reserved = chatFiles.isEmpty() ? 0 : Math.min(ChatAttachments.estimate(chatFiles) + 600,
@@ -2324,7 +2322,7 @@ public final class MainActivity extends Activity {
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
-            case "policy" -> body.addView(text("会话、附件、资料库、记忆、生成图片、账户资料及服务商配置在本机加密保存。在线聊天通过 HTTPS 发给当前服务商，包含发送的图片和近期的附件摘录。开启资料库或记忆检索后，命中的内容也会发送给聊天服务商。移除本机资料或清空记忆无法撤回已发送的内容。\n\n开启聊天搜索后，模型生成的检索词会发给 DeepSeek，结果摘要回传聊天模型。通过 Bing 打开时，浏览器会向 Bing 发送检索词。开启聊天生图后，模型生成的图像描述会发给所选图片服务商。通过系统文件选择器导出的文件不受应用内加密保护。交互卡片选择不会随历史自动发送。开启资料分享后，名称和简介随对话请求发送。开启上下文压缩后，较早的消息可能提前发给同一服务商生成摘要。", 16, ink, false));
+            case "policy" -> dataPolicy(body);
             case "licenses" -> {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
@@ -3215,6 +3213,26 @@ public final class MainActivity extends Activity {
             addRow(body, section.title(), section.summary(), section.icon(), () -> go(section.id()));
             rule(body);
         }
+    }
+
+    private void dataPolicy(LinearLayout body) {
+        addRow(body, "清除发送确认", "下次在线发送时重新确认接收方", R.drawable.ic_shield, () ->
+                showDialog(dialogBuilder().setTitle("清除发送确认？")
+                        .setNegativeButton("取消", null).setPositiveButton("清除", (dialog, index) -> {
+                            var editor = prefs.edit();
+                            for (String key : prefs.getAll().keySet()) {
+                                if (ChatDelivery.isConfirmation(key)) editor.remove(key);
+                            }
+                            editor.apply();
+                            notice("发送确认已清除");
+                        }).create(), true));
+        space(body, 18);
+        body.addView(text("会话、附件、资料库、记忆、生成图片、账户资料及服务商配置在本机加密保存。"
+                + "在线发送前会按接收方和发送范围请求确认。清除确认记录无法撤回已发送的内容。\n\n"
+                + "聊天服务商可接收对话上下文、随附图片和相关附件摘录。开启资料库、记忆或账户资料分享后，"
+                + "检索命中的内容或账户资料也可能发送。上下文压缩可能另行发送较早的消息。\n\n"
+                + "DeepSeek Search 接收检索词，结果摘要回传聊天模型。通过 Bing 打开时，浏览器会向 Bing 发送检索词。"
+                + "图像服务商接收生图描述。导出的文件离开应用内加密存储。交互卡片的选择留在本机。", 16, ink, false));
     }
 
     private void account(LinearLayout body) {
