@@ -8,10 +8,12 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
 import android.text.style.CharacterStyle;
+import android.view.ViewConfiguration;
 import android.view.animation.PathInterpolator;
 import android.widget.TextView;
 
 final class ReplyText extends TextView {
+    private static final int MAX_REVEAL_TEXT_LENGTH = 512;
     private final ValueAnimator[] animators = new ValueAnimator[3];
     private final float[] progress = {1, 1, 1};
     private final BlurMaskFilter[] blur = new BlurMaskFilter[10];
@@ -22,20 +24,36 @@ final class ReplyText extends TextView {
     boolean hasOpening() { return started > 0; }
 
     void update(SpannableStringBuilder content, boolean animateOpening, float radius) {
-        if ((animateOpening && started < 3) || animating()) {
-            int[][] ranges = opening(content.toString());
-            int previous = started;
-            for (int i = 0; i < ranges.length; i++) {
-                if (animateOpening && i >= started) {
-                    startReveal(i, i - previous, radius);
-                    started = i + 1;
-                }
-                if (animators[i] != null) {
-                    content.setSpan(new RevealSpan(i), ranges[i][0], ranges[i][1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-            }
+        if ((animateOpening && started < animators.length) || animating()) {
+            // A single stream delta can grow the software layer before the next layout.
+            if (content.length() > MAX_REVEAL_TEXT_LENGTH || !fitsDrawingCache(getWidth(), getHeight())) stopReveal();
+            else reveal(content, animateOpening, radius);
         }
         setText(content, BufferType.SPANNABLE);
+    }
+
+    private void reveal(SpannableStringBuilder content, boolean animateOpening, float radius) {
+        int[][] ranges = opening(content.toString());
+        int previous = started;
+        for (int i = 0; i < ranges.length; i++) {
+            if (animateOpening && i >= started) {
+                startReveal(i, i - previous, radius);
+                started = i + 1;
+            }
+            if (animators[i] != null) {
+                content.setSpan(new RevealSpan(i), ranges[i][0], ranges[i][1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean fitsDrawingCache(int width, int height) {
+        return (long) width * height <= ViewConfiguration.get(getContext()).getScaledMaximumDrawingCacheSize() / 4;
+    }
+
+    @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
+        if (animating() && !fitsDrawingCache(width, height)) stopReveal();
     }
 
     private boolean animating() {
@@ -87,15 +105,18 @@ final class ReplyText extends TextView {
         setLayerType(LAYER_TYPE_NONE, null);
     }
 
-    @Override protected void onDetachedFromWindow() {
-        if (animating()) {
-            for (int i = 0; i < animators.length; i++) {
-                if (animators[i] != null) animators[i].cancel();
-                animators[i] = null;
-                progress[i] = 1;
-            }
-            clearReveal();
+    private void stopReveal() {
+        started = animators.length;
+        for (int i = 0; i < animators.length; i++) {
+            if (animators[i] != null) animators[i].cancel();
+            animators[i] = null;
+            progress[i] = 1;
         }
+        clearReveal();
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        if (animating()) stopReveal();
         super.onDetachedFromWindow();
     }
 
