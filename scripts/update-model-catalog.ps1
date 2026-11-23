@@ -69,6 +69,7 @@ foreach ($entry in $sourceData.GetEnumerator()) {
         elseif ($spec.context_window -gt 0) { $record['inputLimit'] = [int]$spec.context_window }
         if ($spec.tier -in @('standard', 'advanced', 'flagship')) { $record['tier'] = $spec.tier }
         if ($spec -and $spec.enabled -eq $false) { $record['routeDisabled'] = $true }
+        if ($meta['supports_function_calling'] -eq $true) { $record['supportsTools'] = $true }
         if ($meta.Contains('input_cost_per_token') -and $meta.Contains('output_cost_per_token')) {
             $record['price'] = ([double]$meta['input_cost_per_token'] + [double]$meta['output_cost_per_token']) * 1000000
         }

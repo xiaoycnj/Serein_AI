@@ -36,16 +36,18 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 | Alpha 0.0.9 | 移植 AstraAgent 的 12 项聊天操作 | 本机搜索、归档、消息定位、独立分支、引用和文本导出；[入口与验收](docs/ASTRA-CHAT-PORT.md) | 不执行代码，不接入 Agent 或工作区 |
 | Alpha 0.0.10 | 统一常用浮层与容器 | [控件预设](docs/UI-KIT.md)用于聊天与设置，构建脚本要求 APK 小于 64 MB | 使用现有 Material 依赖，保留系统文件选择器 |
 | Alpha 0.0.11 | 简化侧栏操作 | 对话左侧内缘右滑打开、侧栏内左滑收起；保留返回键和按钮 | 不占用 Android 系统返回手势区 |
+| Alpha 0.0.12 | 让自动模型路由配合聊天选项 | 开启交互卡片时，只自动选择目录标记支持函数调用的模型；手动指定思考强度时使用当前模型 | 路由在本机运行，仅在当前服务商内选择 |
 | Alpha 后续 | 提升日常对话可靠性与可访问性 | 测试覆盖断流、错误、取消及恢复；系统减少动态效果、屏幕阅读器和窄屏下主要聊天操作可用；服务商配置错误给出可处理反馈 | 优先修复真实使用问题，不扩张到工具编排 |
 | Beta 候选 | 改善长历史与数据可控性 | 验证大量会话时的搜索耗时与内存；评估可恢复备份和更细的保留设置 | Markdown 导出只是可阅读副本，不是备份格式 |
 | 暂缓 | 多设备账号体系、协作空间、Agent 工具执行、插件市场 | 不适用 | 超出“Not an Agent. Not a Workspace. Just Chat.”边界 |
 
 每项功能进入开发前都要写明目标场景、用户价值、维护成本和可验证条件；动效需改善操作反馈或阅读连续性，并尊重系统减少动态效果。竞品未证实的行为不作为事实或验收依赖。
 
-## Alpha 0.0.11
+## Alpha 0.0.12
 
 - 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 从对话内容区靠左、避开屏幕最外侧的位置向右滑可打开侧栏；在侧栏内向左滑可收起。「设置 → 外观 → 侧栏滑动手势」可关闭，键盘展开和触摸探索时不接管手势。
+- 可选的自动模型路由优先保留完整对话，再按任务档位与目录价格选模型。开启交互卡片后，候选需标记支持函数调用。如果没有合适的候选，继续使用手动选中的模型。手动设置非默认思考强度时也会使用当前模型。
 - 每轮消息下方可编辑提问、重新生成回复。两种操作都会创建版本，原回答与后续对话可以通过版本按钮切回。
 - 手动停止或在线回复未完成时，已经收到的正文连同状态保存在当前回复版本；重新打开会话仍可看到标记。完全没收到回复时，可在当前对话点「重试」，不会覆盖后来输入的草稿。
 - 「复制回复」将 Markdown 原文与卡片公开文字复制到系统剪贴板，不包含勾选状态。复制确认不显示内容预览；复制后的文字仍可由用户粘贴到其他应用。
@@ -66,7 +68,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ```powershell
 .\scripts\build-alpha.ps1
-adb install -r .\outputs\Serein-Alpha-0.0.11.apk
+adb install -r .\outputs\Serein-Alpha-0.0.12.apk
 ```
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
@@ -85,6 +87,7 @@ Serein 的原创代码和资源采用 [MIT 许可证](LICENSE)。第三方资源
 
 - 应用通用图标使用 [Lucide v0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0)。
 - 侧栏入口采用 [Heroicons v2.2.0（MIT）](https://github.com/tailwindlabs/heroicons/tree/v2.2.0)，手势开关使用 [SVG Repo 的 Swipe Right Gesture（CC0）](https://www.svgrepo.com/svg/325667/swipe-right-gesture)。仅随包分发两个矢量，无运行时依赖。
+- 本地路由的候选能力筛选与档位排序参考 [AutoModelRouter（CC0 1.0）](https://github.com/xiaoycnj/AutoModelRouter/tree/9ba754d02e08bc1069b0f629e2cbcd5981100500)，由应用内的 Java 代码执行。
 - Markdown 解析使用 [commonmark-java 0.24.0（BSD 2-Clause）](https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.24.0)。
 - 通用控件使用 [Material Components for Android 1.13.0（Apache 2.0）](https://github.com/material-components/material-components-android/releases/tag/1.13.0)。
 - 搜索图标来自 [Tabler Icons v3.41.0（MIT）](https://github.com/tabler/tabler-icons/tree/v3.41.0)，设计资源也可通过 [官方 Figma 插件](https://www.figma.com/community/plugin/1169807996149376642/Tabler-Icons) 获取。

@@ -1002,14 +1002,15 @@ public final class MainActivity extends Activity {
         for (int id : path) history.add(chat.history.turn(id));
         String account = profile.systemPrompt();
         boolean compact = prefs.getBoolean("auto_compact", false);
-        Providers.Choice target = routeChoice(choice, message, history, account, compact);
+        boolean cards = prefs.getBoolean("chat_cards", false);
+        Providers.Choice target = routeChoice(choice, message, history, account, compact, cards);
         String providerScope = target.provider().id + "_" + target.provider().base;
         String consent = account.isEmpty() && !compact ? "consent_" + providerScope
                 : "consent_extensions_" + !account.isEmpty() + "_" + compact + "_" + providerScope;
         Runnable send = () -> {
             accepted.run();
             sendOnline(target, message, parent, fromComposer, path, history,
-                    chat == null ? null : chat.checkpoint, account, compact);
+                    chat == null ? null : chat.checkpoint, account, compact, cards);
         };
         if (!prefs.getBoolean(consent, false)) {
             showDialog(dialogBuilder().setTitle("发送给 " + target.provider().label)
@@ -1024,17 +1025,18 @@ public final class MainActivity extends Activity {
     }
 
     private Providers.Choice routeChoice(Providers.Choice manual, String message, List<ChatHistory.Turn> history,
-                                         String account, boolean compact) {
-        if (!autoRoute()) return manual;
+                                         String account, boolean compact, boolean cards) {
+        if (!autoRoute() || effort(manual) > 0) return manual;
         List<ChatContext.ModelSpec> candidates = new ArrayList<>();
         for (Providers.Model model : manual.provider().models) {
             ModelCatalog.Entry entry = modelCatalog.find(model.id());
             if (entry != null && !entry.routeDisabled()) {
-                candidates.add(new ChatContext.ModelSpec(model.id(), entry.inputLimit(), entry.tier(), entry.price()));
+                candidates.add(new ChatContext.ModelSpec(model.id(), entry.inputLimit(), entry.tier(), entry.price(),
+                        entry.supportsTools()));
             }
         }
         ChatContext.ModelSpec selected = ChatContext.route(candidates, message, ChatContext.estimate(history, account, message),
-                ChatContext.estimate(ChatContext.recent(history), account, message), compact);
+                ChatContext.estimate(ChatContext.recent(history), account, message), compact, cards);
         if (selected != null) for (Providers.Model model : manual.provider().models) {
             if (model.id().equals(selected.id())) return new Providers.Choice(manual.provider(), model);
         }
@@ -1043,9 +1045,8 @@ public final class MainActivity extends Activity {
 
     private void sendOnline(Providers.Choice choice, String message, int parent, boolean fromComposer,
                             List<Integer> path, List<ChatHistory.Turn> history, ChatContext.Checkpoint checkpoint,
-                            String account, boolean compact) {
+                            String account, boolean compact, boolean iui) {
         int level = effort(choice);
-        boolean iui = prefs.getBoolean("chat_cards", false);
         ModelCatalog.Entry entry = modelCatalog.find(choice.model().id());
         int inputLimit = entry == null ? 0 : entry.inputLimit();
         boolean preparing = compact && ChatContext.estimate(history, account, message) > ChatContext.threshold(inputLimit);
@@ -1556,7 +1557,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.11 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.12 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
@@ -1570,6 +1571,7 @@ public final class MainActivity extends Activity {
                 license(body, "LiteLLM 模型目录 · MIT 许可", "litellm");
                 license(body, "commonmark-java · BSD 2-Clause 许可", "commonmark");
                 license(body, "AstraAgent · MIT 许可", "astraagent");
+                license(body, "AutoModelRouter · CC0", "auto-model-router");
                 license(body, "Material Components 与 AndroidX · Apache 2.0 许可", "material-components");
             }
         }
@@ -2237,7 +2239,7 @@ public final class MainActivity extends Activity {
         compact.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_compact", checked).apply());
         space(body, 10);
         MaterialSwitch route = settingSwitch(body, "自动模型路由", autoRoute());
-        body.addView(text("路由范围：当前服务商的已配置聊天模型。", 13, muted, false));
+        body.addView(text("只在当前服务商内选模型。开启交互卡片时，自动选用目录中标记支持函数调用的模型；手动设置思考强度时使用当前模型。", 13, muted, false));
         route.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("auto_route", checked).apply());
         rule(body);
         MaterialSwitch cards = settingSwitch(body, "交互卡片", prefs.getBoolean("chat_cards", false));

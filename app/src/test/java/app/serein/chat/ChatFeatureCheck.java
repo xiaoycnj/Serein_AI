@@ -199,19 +199,22 @@ final class ChatFeatureCheck {
     }
 
     private static void routing() {
-        var fast = new ChatContext.ModelSpec("fast", 16_000, 0, 1.0);
-        var other = new ChatContext.ModelSpec("other-standard", 16_000, 0, 2.0);
-        var advanced = new ChatContext.ModelSpec("advanced", 32_000, 1, 4.0);
-        var flagship = new ChatContext.ModelSpec("flagship", 128_000, 2, 10.0);
-        var unknown = new ChatContext.ModelSpec("unknown", 0, 0, 0.0);
+        var fast = new ChatContext.ModelSpec("fast", 16_000, 0, 1.0, false);
+        var other = new ChatContext.ModelSpec("other-standard", 16_000, 0, 2.0, true);
+        var advanced = new ChatContext.ModelSpec("advanced", 32_000, 1, 4.0, false);
+        var flagship = new ChatContext.ModelSpec("flagship", 128_000, 2, 10.0, true);
+        var unknown = new ChatContext.ModelSpec("unknown", 0, 0, 0.0, true);
         var candidates = List.of(other, flagship, advanced, fast, unknown);
-        equal(ChatContext.route(candidates, "hello", 1_000, 1_000, false), fast);
-        equal(ChatContext.route(candidates, "review this code", 1_000, 1_000, false), advanced);
-        equal(ChatContext.route(candidates, "compare the architecture", 1_000, 1_000, false), flagship);
-        equal(ChatContext.route(candidates, "hello", 11_000, 2_000, true), advanced);
-        equal(ChatContext.route(List.of(fast, unknown), "hello", 11_000, 2_000, false), null);
-        equal(ChatContext.route(List.of(fast, unknown), "hello", 11_000, 2_000, true), fast);
-        System.out.println("PASS: route ranking checks task tier, capacity, compaction setting and known price");
+        equal(ChatContext.route(candidates, "hello", 1_000, 1_000, false, false), fast);
+        equal(ChatContext.route(candidates, "review this code", 1_000, 1_000, false, false), advanced);
+        equal(ChatContext.route(candidates, "compare the architecture", 1_000, 1_000, false, false), flagship);
+        equal(ChatContext.route(candidates, "hello", 11_000, 2_000, true, false), advanced);
+        equal(ChatContext.route(List.of(fast, unknown), "hello", 11_000, 2_000, false, false), null);
+        equal(ChatContext.route(List.of(fast, unknown), "hello", 11_000, 2_000, true, false), fast);
+        equal(ChatContext.route(candidates, "hello", 1_000, 1_000, false, true), other);
+        equal(ChatContext.route(candidates, "review code", 11_000, 2_000, true, true), flagship);
+        equal(ChatContext.route(List.of(fast, unknown), "hello", 1_000, 1_000, false, true), null);
+        System.out.println("PASS: route ranking checks task tier, capacity, compaction, known price and card capability");
     }
 
     private static void checkpoints() throws Exception {

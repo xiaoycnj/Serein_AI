@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 final class ChatContext {
     record Checkpoint(String scope, int through, String text) {}
     record Context(List<ChatHistory.Turn> recent, String summary, Checkpoint checkpoint) {}
-    record ModelSpec(String id, int inputLimit, int tier, double price) {}
+    record ModelSpec(String id, int inputLimit, int tier, double price, boolean supportsTools) {}
 
     private static final int KEEP_TURNS = 4;
     private static final int CHUNK_CHARS = 12_000;
@@ -34,21 +34,25 @@ final class ChatContext {
 
     static int threshold(int inputLimit) { return Math.min(budget(inputLimit), 32_000); }
 
-    static ModelSpec route(List<ModelSpec> candidates, String prompt, long total, long recent, boolean compact) {
+    static ModelSpec route(List<ModelSpec> candidates, String prompt, long total, long recent, boolean compact,
+                           boolean requireTools) {
         int recommended = COMPLEX.matcher(prompt).find() ? 2 : TECHNICAL.matcher(prompt).find() || prompt.length() > 2000 ? 1 : 0;
         ModelSpec best = null;
-        int bestGroup = Integer.MAX_VALUE;
+        boolean bestFits = false;
+        int bestRank = Integer.MAX_VALUE;
         for (ModelSpec model : candidates) {
-            if (model.inputLimit() <= 0) continue;
+            if (model.inputLimit() <= 0 || (requireTools && !model.supportsTools())) continue;
             int capacity = budget(model.inputLimit());
             boolean fits = total <= capacity;
-            if (!fits && (!compact || recent + MAX_SUMMARY_CHARS + 32 > capacity)) continue;
-            // Prefer a full transcript, then the smallest tier that meets the recommendation.
+            if (!fits && (!compact || total <= recent || recent + MAX_SUMMARY_CHARS + 32 > capacity)) continue;
+            // Keep the full transcript where possible, then apply AutoModelRouter's balanced tier preference.
             int gap = model.tier() - recommended;
-            int group = (fits ? 0 : 8) + (gap >= 0 ? gap : 3 - gap);
-            if (best == null || group < bestGroup || (group == bestGroup && cheaper(model, best))) {
+            int rank = gap >= 0 ? gap : 3 - gap;
+            if (best == null || (fits && !bestFits)
+                    || (fits == bestFits && (rank < bestRank || (rank == bestRank && cheaper(model, best))))) {
                 best = model;
-                bestGroup = group;
+                bestFits = fits;
+                bestRank = rank;
             }
         }
         return best;
