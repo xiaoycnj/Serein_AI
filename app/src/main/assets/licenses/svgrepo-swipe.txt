@@ -1,0 +1,7 @@
+Swipe Right Gesture, SVG Repo, asset 325667
+https://www.svgrepo.com/svg/325667/swipe-right-gesture
+
+Published by SVG Repo under CC0 1.0 Universal.
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+Adapted to Android VectorDrawable.

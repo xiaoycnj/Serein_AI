@@ -5,7 +5,7 @@ $adb = (Get-Command adb).Source
 $package = 'app.serein.chat'
 $device = @(if ($Serial) { '-s'; $Serial } else { '-d' })
 $dump = '/data/local/tmp/serein-smoke.xml'
-$testMessage = 'Alpha010-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
+$testMessage = 'Alpha011-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
 $samplePrompt = '帮我理顺今天的安排'
 $sampleReply = '先写下今天非做不可的一件事'
 $script:OriginalModelTitle = $null
@@ -362,7 +362,7 @@ try {
     Assert-Visible '减少动效'
     Tap-Label '返回'
     Tap-Label '关于'
-    Assert-Visible 'Alpha 0.0.10 · Android 13+'
+    Assert-Visible 'Alpha 0.0.11 · Android 13+'
     Tap-Label '返回'
     Tap-Label '自定义插件'
     $extensions = Get-Screen

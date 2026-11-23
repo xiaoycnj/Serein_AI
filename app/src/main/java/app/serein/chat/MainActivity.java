@@ -36,6 +36,9 @@ import android.text.TextWatcher;
 import android.text.method.LinkMovementMethod;
 import android.view.Choreographer;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ViewConfiguration;
+import android.view.accessibility.AccessibilityManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -120,6 +123,11 @@ public final class MainActivity extends Activity {
     private Snackbar activeNotice;
     private final List<AlertDialog> openDialogs = new ArrayList<>();
     private FrameLayout drawer;
+    private View drawerRail;
+    private final DrawerSwipe drawerSwipe = new DrawerSwipe();
+    private final int[] swipeLocation = new int[2];
+    private View swipeArea;
+    private int systemSwipeLeft, systemSwipeRight;
     private LinearLayout screen;
     private View drawerTrigger;
     private boolean drawerArchived;
@@ -185,6 +193,9 @@ public final class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            var gestures = insets.getInsets(WindowInsets.Type.systemGestures());
+            systemSwipeLeft = gestures.left;
+            systemSwipeRight = gestures.right;
             view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
             boolean now = insets.isVisible(WindowInsets.Type.ime());
             if (imeVisible != now) {
@@ -196,6 +207,63 @@ public final class MainActivity extends Activity {
         setContentView(root);
         render();
         root.requestApplyInsets();
+    }
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            drawerSwipe.reset();
+            swipeArea = drawerGestureArea(event);
+            if (swipeArea != null) drawerSwipe.start(drawer == null ? DrawerSwipe.Direction.OPEN : DrawerSwipe.Direction.CLOSE,
+                    event.getRawX(), event.getRawY(), event.getEventTime());
+        } else if (drawerSwipe.tracking() || drawerSwipe.captured()) {
+            if (event.getPointerCount() != 1 || action == MotionEvent.ACTION_CANCEL
+                    || swipeArea != (drawer == null ? chatScroll : drawerRail)) drawerSwipe.cancel();
+            if (action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_UP) {
+                float slop = ViewConfiguration.get(this).getScaledTouchSlop();
+                float distance = Math.max(dp(52), 3 * slop);
+                if (drawerSwipe.move(event.getRawX(), event.getRawY(), event.getEventTime(), slop,
+                        distance, ViewConfiguration.getLongPressTimeout())) {
+                    MotionEvent cancel = MotionEvent.obtain(event);
+                    try {
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        super.dispatchTouchEvent(cancel);
+                    } finally { cancel.recycle(); }
+                }
+                if (action == MotionEvent.ACTION_UP) {
+                    boolean handled = drawerSwipe.captured();
+                    var direction = drawerSwipe.finish(event.getRawX(), event.getRawY(), distance);
+                    swipeArea = null;
+                    if (direction == DrawerSwipe.Direction.OPEN) openDrawer();
+                    if (direction == DrawerSwipe.Direction.CLOSE) closeDrawer();
+                    if (handled) return true;
+                }
+            }
+            if (drawerSwipe.captured()) {
+                if (action == MotionEvent.ACTION_CANCEL) { drawerSwipe.reset(); swipeArea = null; }
+                return true;
+            }
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    private View drawerGestureArea(MotionEvent event) {
+        if (root == null || !page.equals(CHAT) || imeVisible || !prefs.getBoolean("drawer_swipe", true)) return null;
+        var accessibility = getSystemService(AccessibilityManager.class);
+        if (accessibility != null && accessibility.isTouchExplorationEnabled()) return null;
+        View area = drawer == null ? chatScroll : drawerRail;
+        if (area == null || !area.isShown()) return null;
+        root.getLocationOnScreen(swipeLocation);
+        int rootLeft = swipeLocation[0];
+        int rootWidth = root.getWidth();
+        area.getLocationOnScreen(swipeLocation);
+        float x = event.getRawX() - rootLeft;
+        float y = event.getRawY() - swipeLocation[1];
+        float left = swipeLocation[0] - rootLeft;
+        float right = Math.min(left + area.getWidth(), rootWidth - systemSwipeRight);
+        if (drawer == null) right = Math.min(right, Math.max(left, systemSwipeLeft) + dp(84));
+        return y >= 0 && y < area.getHeight() && DrawerSwipe.startsBetween(x, left, right, systemSwipeLeft)
+                ? area : null;
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
@@ -261,6 +329,7 @@ public final class MainActivity extends Activity {
         screen.setFocusableInTouchMode(true);
         root.addView(screen, new FrameLayout.LayoutParams(MATCH, MATCH));
         drawer = null;
+        drawerRail = null;
         input = null;
         composerAnchor = null;
         reasoningRow = null;
@@ -282,7 +351,7 @@ public final class MainActivity extends Activity {
 
     private void renderChat() {
         LinearLayout toolbar = toolbar();
-        MaterialButton history = action("会话", R.drawable.ic_menu, 0, ink, 0);
+        MaterialButton history = action("会话", R.drawable.ic_sidebar_menu, 0, ink, 0);
         history.setOnClickListener(v -> openDrawer());
         toolbar.addView(history, new LinearLayout.LayoutParams(WRAP, WRAP));
         drawerTrigger = history;
@@ -1195,6 +1264,7 @@ public final class MainActivity extends Activity {
         drawer.addView(scrim, new FrameLayout.LayoutParams(MATCH, MATCH));
 
         LinearLayout rail = column();
+        drawerRail = rail;
         rail.setBackgroundColor(panel);
         rail.setClickable(true);
         rail.setAccessibilityPaneTitle("会话侧栏");
@@ -1412,6 +1482,7 @@ public final class MainActivity extends Activity {
         if (drawer == null) return;
         root.removeView(drawer);
         drawer = null;
+        drawerRail = null;
         screen.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         drawerTrigger.requestFocus();
         updateReasoning(false);
@@ -1485,7 +1556,7 @@ public final class MainActivity extends Activity {
                 body.addView(logo(68));
                 space(body, 10);
                 body.addView(text("Serein", 24, ink, true));
-                body.addView(text("Alpha 0.0.10 · Android 13+", 14, muted, false));
+                body.addView(text("Alpha 0.0.11 · Android 13+", 14, muted, false));
                 space(body, 20);
                 body.addView(text("Serein is a Chat App. Not an Agent. Not a Workspace. Just Chat.", 16, ink, false));
             }
@@ -1494,6 +1565,8 @@ public final class MainActivity extends Activity {
                 license(body, "Lucide 图标 · ISC 许可", "lucide");
                 license(body, "Lobe Icons · MIT 许可", "lobe-icons");
                 license(body, "Tabler Icons · MIT 许可", "tabler-icons");
+                license(body, "Heroicons · MIT 许可", "heroicons");
+                license(body, "SVG Repo 滑动图标 · CC0", "svgrepo-swipe");
                 license(body, "LiteLLM 模型目录 · MIT 许可", "litellm");
                 license(body, "commonmark-java · BSD 2-Clause 许可", "commonmark");
                 license(body, "AstraAgent · MIT 许可", "astraagent");
@@ -2259,6 +2332,12 @@ public final class MainActivity extends Activity {
         space(body, 24);
         MaterialSwitch reduce = settingSwitch(body, "减少动效", prefs.getBoolean("reduce_motion", false));
         reduce.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("reduce_motion", checked).apply());
+        MaterialSwitch swipe = settingSwitch(body, "侧栏滑动手势", prefs.getBoolean("drawer_swipe", true));
+        var glyph = controls.getDrawable(R.drawable.ic_sidebar_swipe).mutate();
+        glyph.setTint(ink);
+        swipe.setCompoundDrawablePadding(dp(8));
+        swipe.setCompoundDrawablesRelativeWithIntrinsicBounds(glyph, null, null, null);
+        swipe.setOnCheckedChangeListener((button, checked) -> prefs.edit().putBoolean("drawer_swipe", checked).apply());
     }
 
     private void dropdown(LinearLayout body, String label, String[] values, int selected,
