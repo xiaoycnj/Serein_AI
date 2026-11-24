@@ -132,6 +132,10 @@ final class ChatArtifacts {
                 "text/plain", out -> out.write(block.source()));
     }
 
+    static Document replyFile(String markdown) {
+        return new Document("serein-reply.md", "text/markdown", out -> out.write(markdown));
+    }
+
     static Document csvFile(Table table) {
         return new Document("table.csv", "text/csv", out -> {
             out.write('\ufeff');

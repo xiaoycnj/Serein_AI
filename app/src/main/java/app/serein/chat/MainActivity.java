@@ -1376,6 +1376,9 @@ public final class MainActivity extends Activity {
         if (!turn.reply().isBlank() || turn.card() != null) {
             items.add(new MenuItem("引用到草稿", () -> quoteReply(turn)));
         }
+        if (MarkdownBudget.requiresPreview(turn.reply())) {
+            items.add(new MenuItem("导出完整回复", () -> chooseExport(ChatArtifacts.replyFile(turn.reply()))));
+        }
         items.add(new MenuItem("从此消息创建分支", () -> forkChat(chat, id)));
         if (hasArtifacts) items.add(new MenuItem("代码与表格", () -> openArtifacts(chat, id)));
         showMenu("消息操作", items);

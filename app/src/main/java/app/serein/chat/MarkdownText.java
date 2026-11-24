@@ -28,6 +28,10 @@ final class MarkdownText {
     record Rendered(SpannableStringBuilder text, boolean hasArtifacts) {}
 
     static Rendered render(String markdown, int ink, int secondary, int code, int inset) {
+        // Adding thousands of Android spans can block input even when the response fits the wire limit.
+        if (MarkdownBudget.requiresPreview(markdown)) {
+            return new Rendered(new SpannableStringBuilder(MarkdownBudget.preview(markdown)), false);
+        }
         Renderer renderer = new Renderer(ink, secondary, code, inset);
         renderer.children(ChatArtifacts.parse(markdown), 0);
         var text = renderer.text;
