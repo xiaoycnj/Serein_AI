@@ -102,6 +102,14 @@ adb install -r .\outputs\Serein-Alpha-0.0.25.apk
 
 用 `./scripts/test-alpha.ps1 -OfflineModel` 走查离线发送、重启恢复、回访历史及设置。脚本会留下两段测试会话。`./scripts/test-alpha.ps1 -ProviderControls` 使用临时服务商和测试 Key 走查多 Key 管理和思考强度控件。
 
+对话回归使用 PowerShell 7、Node.js 18+、JDK（含 `keytool`）和已启动的 Android 模拟器：
+
+```powershell
+.\scripts\test-chat-regression.ps1 -Serial @('emulator-5580', 'emulator-5582')
+```
+
+按 `adb devices` 替换序列号。脚本构建独立的 `app.serein.chat.chatqa`，使用宿主机本地 HTTPS 夹具和合成消息，不需要 API Key，不修改系统证书或正式安装。它按设备串行检查发送确认、连续发送、断流、停止、重试、前后台切换、冷启动回读和密集 Markdown；结束后卸载测试包。请求顺序记录留在 `outputs/chat-regression/`。在线服务商冒烟测试仍需另跑。
+
 发行打包使用 `./scripts/build-alpha.ps1 -RunChatTests -Release`，输出到 `outputs/release/`。构建需要仓库外的签名库（别名 `serein-release`）；通过 `SEREIN_RELEASE_KEYSTORE` 和 `SEREIN_RELEASE_STORE_PASS` 提供路径和密码。
 
 在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。可在正文出现后点停止，重开会话确认部分回复和停止标记仍在。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。

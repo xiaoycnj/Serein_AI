@@ -20,6 +20,7 @@ dependencies {
 def releaseKey = providers.environmentVariable('SEREIN_RELEASE_KEYSTORE')
 def releasePassword = providers.environmentVariable('SEREIN_RELEASE_STORE_PASS')
 def smokePackage = providers.gradleProperty('sereinSmokePackage').map { it.toBoolean() }.orElse(false)
+def chatQaResources = providers.gradleProperty('sereinChatQaResources')
 
 android {
     namespace 'app.serein.chat'
@@ -38,7 +39,14 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    if (smokePackage.get()) buildTypes.debug.applicationIdSuffix '.smoke'
+    if (chatQaResources.isPresent()) {
+        if (smokePackage.get()) throw new GradleException('Select only one isolated test package.')
+        buildTypes.debug.applicationIdSuffix '.chatqa'
+        sourceSets.debug.manifest.srcFile 'src/chatQa/AndroidManifest.xml'
+        sourceSets.debug.res.srcDirs 'src/chatQa/res', chatQaResources.get()
+    } else if (smokePackage.get()) {
+        buildTypes.debug.applicationIdSuffix '.smoke'
+    }
 
     if (releaseKey.isPresent() && releasePassword.isPresent()) {
         signingConfigs {
