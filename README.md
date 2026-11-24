@@ -60,7 +60,7 @@ Serein 服务于用户主动发起的对话。功能可以改善聊天、模型�
 
 ## Alpha 0.0.25
 
-- 最低支持 Android 13。可在 [GitHub Releases](https://github.com/xiaoycnj/Serein_AI/releases) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
+- 最低支持 Android 13。可在 [Alpha 0.0.25 预发行版](https://github.com/xiaoycnj/Serein_AI/releases/tag/v0.0.25-alpha) 下载签名 APK，也可按下方步骤在本地构建调试包。发行包和调试包签名不同，不能互相覆盖安装；卸载会删除本机会话和设置。
 - 「设置 → 关于 → 应用更新」检查 GitHub Releases，支持 Alpha 预发行版。点「开始更新」进入动画，进度环随实际收到的字节推进。下载完成和安装前都会验证 SHA-256、包名、版本和当前安装签名。最后点「安装更新」交给 Android 确认。发布标签用 `v0.0.x-alpha`，APK 资产用 `Serein-Alpha-0.0.x.apk`。
 - 「热更新模型目录」从 Serein 仓库校验并应用 JSON 模型目录，成功后无需重启。校验失败时使用已有的可用目录。
 - 点输入框的回形针添加附件，每条消息最多 3 个。文本、Markdown、CSV、TSV、JSON、XML、YAML、日志和 DOCX 单个限 5 MiB、提取的正文限 60,000 个字符。PNG、JPEG 和 WebP 单个限 2 MiB，最长边限 4096 像素，需选择支持图片输入的模型。PDF 和 OCR 暂未接入。
