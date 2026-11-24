@@ -2,13 +2,17 @@ package app.serein.chat;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.view.ContextThemeWrapper;
+import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.snackbar.Snackbar;
 
@@ -34,6 +38,19 @@ final class UiOverlays {
             button.setAllCaps(false);
             button.setMinHeight(UiKit.dp(button.getContext(), 48));
         }
+    }
+
+    static void showForm(AppCompatDialog dialog, boolean secure, boolean motion, int width) {
+        var window = dialog.getWindow();
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        window.setGravity(Gravity.CENTER);
+        if (secure) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if (!motion) window.setWindowAnimations(0);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+        window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
     }
 
     static ArrayAdapter<String> menuRows(Context context, String[] labels, int ink) {

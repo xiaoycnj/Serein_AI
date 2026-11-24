@@ -177,6 +177,8 @@ public final class MainActivity extends Activity {
     private int systemSwipeLeft, systemSwipeRight;
     private LinearLayout screen;
     private View drawerTrigger;
+    private View modelTrigger;
+    private boolean restoreModelFocus;
     private boolean drawerArchived;
     private Runnable queuedHistorySearch;
     private Future<?> runningHistorySearch;
@@ -517,6 +519,7 @@ public final class MainActivity extends Activity {
         turnAnchors.clear();
         latestButton = null;
         directoryButton = null;
+        modelTrigger = null;
         liveReply = null;
         liveAnchors = null;
         liveStatus = null;
@@ -536,9 +539,12 @@ public final class MainActivity extends Activity {
     private void renderChat() {
         LinearLayout toolbar = toolbar();
         if (visibleWallpaper() || glassMaterial()) toolbar.setBackgroundColor(chatSurface(paper, muted));
-        MaterialButton history = action("会话", R.drawable.ic_sidebar_menu, 0, ink, 0);
+        boolean compactTitle = getResources().getConfiguration().screenWidthDp < 360
+                || getResources().getConfiguration().fontScale > 1.3f;
+        MaterialButton history = compactTitle ? iconButton("会话", R.drawable.ic_sidebar_menu, ink, 0, this::openDrawer)
+                : action("会话", R.drawable.ic_sidebar_menu, 0, ink, 0);
         history.setOnClickListener(v -> openDrawer());
-        toolbar.addView(history, new LinearLayout.LayoutParams(WRAP, WRAP));
+        toolbar.addView(history);
         drawerTrigger = history;
 
         LinearLayout identity = column();
@@ -549,7 +555,7 @@ public final class MainActivity extends Activity {
         if (choice != null) label.addView(icon(modelCatalog.icon(choice.model()), 17, ink));
         TextView title = text(choice == null ? "Serein" : choice.model().title(), 16, ink, true);
         title.setGravity(Gravity.CENTER);
-        title.setSingleLine(true);
+        title.setMaxLines(compactTitle ? 2 : 1);
         title.setEllipsize(TextUtils.TruncateAt.END);
         title.setPadding(dp(4), 0, dp(4), 0);
         label.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
@@ -565,6 +571,7 @@ public final class MainActivity extends Activity {
         identity.setContentDescription("选择模型，当前 " + (choice == null ? "离线演示" : choice.model().title()));
         identity.setFocusable(true);
         identity.setOnClickListener(v -> chooseModel());
+        modelTrigger = identity;
         Motion.press(identity, this::motionEnabled);
         toolbar.addView(identity, new LinearLayout.LayoutParams(0, WRAP, 1));
         directoryButton = iconButton("消息目录", R.drawable.ic_list, ink, 0, this::showMessageDirectory);
@@ -1338,8 +1345,8 @@ public final class MainActivity extends Activity {
         if (versions.size() > 1) {
             int current = versions.indexOf(id);
             MaterialButton count = action((current + 1) + " / " + versions.size(), 0, 0, muted, 0);
-            count.setMinWidth(0);
-            count.setMinimumWidth(0);
+            count.setMinWidth(dp(48));
+            count.setMinimumWidth(dp(48));
             count.setContentDescription("切换版本，当前第 " + (current + 1) + " 个，共 " + versions.size() + " 个");
             count.setOnClickListener(v -> {
                 if (sending) { notice("请先停止当前生成"); return; }
@@ -1358,7 +1365,15 @@ public final class MainActivity extends Activity {
                     });
                 }).setNegativeButton("取消", null).create(), true);
             });
-            actions.addView(count);
+            int available = getResources().getDisplayMetrics().widthPixels - 2 * chatGutter();
+            count.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            if (actions.getChildCount() * dp(48) + count.getMeasuredWidth() > available) {
+                transcript.addView(actions);
+                protectOnWallpaper(count);
+                transcript.addView(count, new LinearLayout.LayoutParams(WRAP, WRAP));
+                return;
+            }
+            actions.addView(count, new LinearLayout.LayoutParams(WRAP, WRAP));
         }
         transcript.addView(actions);
     }
@@ -2270,36 +2285,42 @@ public final class MainActivity extends Activity {
         scrim.setContentDescription("关闭侧栏");
         scrim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         scrim.setOnClickListener(v -> closeDrawer());
+        scrim.setFocusable(false);
         drawer.addView(scrim, new FrameLayout.LayoutParams(MATCH, MATCH));
 
         LinearLayout rail = column();
         drawerRail = rail;
         rail.setBackgroundColor(chatSurface(panel, muted));
         rail.setClickable(true);
+        rail.setFocusable(false);
         rail.setAccessibilityPaneTitle("会话侧栏");
         rail.setPadding(dp(14), dp(6), dp(14), dp(10));
-        int width = Math.min(dp(340), Math.max(dp(220), root.getWidth() - root.getPaddingLeft() - root.getPaddingRight() - dp(44)));
+        int contentWidth = root.getWidth() - root.getPaddingLeft() - root.getPaddingRight();
+        int width = Math.min(dp(340), Math.min(contentWidth, Math.max(dp(220), contentWidth - dp(40))));
         drawer.addView(rail, new FrameLayout.LayoutParams(width, MATCH, Gravity.START));
 
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(logo(40));
-        TextView brand = text("Serein", 21, ink, true);
+        header.addView(logo(28));
+        TextView brand = text("Serein", 18, ink, true);
         brand.setPadding(dp(7), 0, 0, 0);
-        brand.setSingleLine(true);
-        brand.setEllipsize(TextUtils.TruncateAt.END);
+        brand.setAccessibilityHeading(true);
         header.addView(brand, new LinearLayout.LayoutParams(0, WRAP, 1));
         header.addView(iconButton("搜索会话", R.drawable.ic_search, ink, 0, () -> go(SEARCH)));
         View close = iconButton("关闭侧栏", R.drawable.ic_close, ink, 0, this::closeDrawer);
         header.addView(close);
         rail.addView(header);
-        space(rail, 16);
-        View start = action("新建聊天", R.drawable.ic_plus, 0, Appearance.readable(accent, ink, tint), tint);
-        start.setOnClickListener(v -> newChat());
-        rail.addView(start, new LinearLayout.LayoutParams(MATCH, WRAP));
-        space(rail, 14);
+        space(rail, 8);
         ScrollView historyScroll = scroll();
         LinearLayout historyPane = column();
+        historyScroll.addView(historyPane);
+        rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        boolean compactHeight = getResources().getConfiguration().screenHeightDp < 460;
+        View start = action("新建聊天", R.drawable.ic_plus, 0, Appearance.readable(accent, ink, tint), tint);
+        start.setOnClickListener(v -> newChat());
+        historyPane.addView(start, new LinearLayout.LayoutParams(MATCH, WRAP));
+        space(historyPane, 8);
+        if (compactHeight) addDrawerDestinations(historyPane);
         LinearLayout history = column();
         drawerHistory = history;
         MaterialButton archive = action(drawerArchived ? "最近会话" : "已归档",
@@ -2313,20 +2334,22 @@ public final class MainActivity extends Activity {
         historyPane.addView(archive, new LinearLayout.LayoutParams(MATCH, WRAP));
         renderHistory(history);
         historyPane.addView(history);
-        historyScroll.addView(historyPane);
-        rail.addView(historyScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
-        rule(rail);
-        String name = profile.displayName();
-        addRow(rail, "资料库", "", R.drawable.ic_file, () -> openFileSpace(false));
-        addRow(rail, name, "账户", R.drawable.ic_user, () -> go(ACCOUNT));
-        addRow(rail, "设置", "", R.drawable.ic_settings, () -> go(SETTINGS));
+        if (!compactHeight) addDrawerDestinations(rail);
         screen.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        screen.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        screen.setFocusable(false);
         root.addView(drawer, new FrameLayout.LayoutParams(MATCH, MATCH));
-        close.setFocusableInTouchMode(true);
-        close.requestFocus();
+        focusNavigationControl(close, false);
         Motion.enter(rail, -dp(24), 0, 1, motionEnabled());
         updateReasoning(false);
         updateBackCallback();
+    }
+
+    private void addDrawerDestinations(LinearLayout parent) {
+        rule(parent);
+        addRow(parent, "资料库", "", R.drawable.ic_file, () -> openFileSpace(false));
+        addRow(parent, profile.displayName(), "账户", R.drawable.ic_user, () -> go(ACCOUNT));
+        addRow(parent, "设置", "", R.drawable.ic_settings, () -> go(SETTINGS));
     }
 
     private void renderHistory(LinearLayout history) {
@@ -2377,14 +2400,15 @@ public final class MainActivity extends Activity {
         item.setSelected(current);
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(chat.title, 15, ink, true);
-        title.setMaxLines(1);
+        TextView title = text(chat.title, 15, Appearance.readable(ink, muted, current ? tint : panel), true);
+        boolean largeText = getResources().getConfiguration().fontScale > 1.3f;
+        title.setMaxLines(largeText ? 2 : 1);
         title.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(title, new LinearLayout.LayoutParams(0, WRAP, 1));
         String date = DateFormat.getDateInstance(DateFormat.SHORT, Locale.SIMPLIFIED_CHINESE).format(chat.updatedAt);
         TextView time = text(date, 12, muted, false);
         time.setPadding(dp(7), 0, 0, 0);
-        top.addView(time);
+        if (!largeText) top.addView(time);
         item.addView(top);
         LinearLayout bottom = row();
         String last = chat.history.turn(chat.history.leaf()).promptLabel().replace('\n', ' ');
@@ -2394,7 +2418,13 @@ public final class MainActivity extends Activity {
         bottom.addView(preview, new LinearLayout.LayoutParams(0, WRAP, 1));
         if (current) bottom.addView(icon(R.drawable.ic_check, 18, accent));
         item.addView(bottom);
+        if (largeText) {
+            time.setPadding(0, dp(2), 0, 0);
+            item.addView(time);
+        }
         item.setFocusable(true);
+        item.setScreenReaderFocusable(true);
+        item.setStateDescription(current ? "当前会话" : null);
         item.setOnClickListener(v -> openHistoryChat(chat, -1, false));
         entry.addView(item, new LinearLayout.LayoutParams(0, WRAP, 1));
         MaterialButton more = iconButton("会话选项", R.drawable.ic_more, muted, 0, () -> historyOptions(chat));
@@ -2491,9 +2521,24 @@ public final class MainActivity extends Activity {
         drawerRail = null;
         drawerHistory = null;
         screen.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-        drawerTrigger.requestFocus();
+        screen.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+        screen.setFocusableInTouchMode(true);
+        focusNavigationControl(drawerTrigger, true);
         updateReasoning(false);
         updateBackCallback();
+    }
+
+    private void focusNavigationControl(View target, boolean restoring) {
+        if (restoring) target.requestFocusFromTouch();
+        else if (!target.isInTouchMode()) target.requestFocus();
+        var accessibility = getSystemService(AccessibilityManager.class);
+        if (accessibility != null && accessibility.isTouchExplorationEnabled()) {
+            target.post(() -> {
+                if (target.isAttachedToWindow() && target.isShown()) {
+                    target.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+                }
+            });
+        }
     }
 
     private void go(String destination) {
@@ -3053,8 +3098,23 @@ public final class MainActivity extends Activity {
         int preferredHeight = dp(shortWindow ? 496 : Math.max(280, contentHeight));
         window.setLayout(Math.min(bounds.width(), dp(520)), Math.min(preferredHeight, heightLimit));
         dialog.show();
-        trackDialog(dialog);
+        trackDialog(dialog, () -> {
+            restoreModelFocus = true;
+            ui.post(this::restorePickerFocus);
+        });
         Motion.enter(sheet, 0, dp(24), .99f, motionEnabled());
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && restoreModelFocus) ui.post(this::restorePickerFocus);
+    }
+
+    private void restorePickerFocus() {
+        if (!restoreModelFocus || !hasWindowFocus()) return;
+        restoreModelFocus = false;
+        if (!isDestroyed() && page.equals(CHAT) && drawer == null && modelTrigger != null
+                && modelTrigger.isAttachedToWindow()) focusNavigationControl(modelTrigger, true);
     }
 
     private static boolean matches(String name, String terms) {
@@ -3103,6 +3163,7 @@ public final class MainActivity extends Activity {
             addView(labels, new LayoutParams(0, WRAP, 1));
             check = icon(R.drawable.ic_check, 19, ink);
             addView(check);
+            setScreenReaderFocusable(true);
         }
 
         void bind(Providers.Choice choice, boolean selected) {
@@ -3440,6 +3501,7 @@ public final class MainActivity extends Activity {
 
     private EditText field(LinearLayout body, String label, String value, boolean secret) {
         TextInputEditText edit = UiKit.field(controls, body, label, value, ink, muted, line, controlAccent());
+        edit.setImeOptions(edit.getImeOptions() | android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         if (secret) {
             edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
             edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -3475,20 +3537,46 @@ public final class MainActivity extends Activity {
 
     private void saveForm(String title, LinearLayout form, boolean secure, String positiveLabel, Supplier<FormSave> prepare,
                           Runnable remove) {
+        if (activeNotice != null) activeNotice.dismiss();
+        AppCompatDialog dialog = new AppCompatDialog(controls);
+        dialog.supportRequestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout body = column();
+        body.setBackground(shape(panel, 12, line));
+        body.setAccessibilityPaneTitle(title);
+        body.setFocusableInTouchMode(true);
+        TextView heading = text(title, 18, ink, true);
+        heading.setPadding(dp(16), dp(10), dp(16), dp(6));
+        heading.setAccessibilityHeading(true);
+        body.addView(heading);
+
         ScrollView scroll = scroll();
         scroll.addView(form);
+        // Only the body scrolls: the footer keeps its space when the dialog or IME is short.
+        body.addView(scroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
         TextView errorText = text("", 14, ink, true);
         form.addView(errorText);
         errorText.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         errorText.setVisibility(View.GONE);
-        MaterialAlertDialogBuilder builder = dialogBuilder().setTitle(title).setView(scroll)
-                .setNegativeButton("取消", null).setPositiveButton(positiveLabel, null);
-        if (remove != null) builder.setNeutralButton("移除", (dialog, index) -> remove.run());
-        AlertDialog dialog = builder.create();
-        showDialog(dialog, secure);
-        var positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-        var negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-        var neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+
+        LinearLayout footer = row();
+        footer.setPadding(dp(8), dp(5), dp(8), dp(8));
+        footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        MaterialButton negative = action("取消", 0, 0, ink, 0);
+        MaterialButton positive = action(positiveLabel, 0, 0, onAccent, accent);
+        MaterialButton neutral = remove == null ? null : action("移除", 0, 0, ink, 0);
+        if (neutral != null) {
+            footer.addView(neutral, formButtonLayout());
+            neutral.setOnClickListener(view -> { dialog.dismiss(); remove.run(); });
+        }
+        footer.addView(negative, formButtonLayout());
+        footer.addView(positive, formButtonLayout());
+        body.addView(footer, new LinearLayout.LayoutParams(MATCH, WRAP));
+        negative.setOnClickListener(view -> dialog.dismiss());
+        dialog.setContentView(body);
+        body.requestFocus();
+        int width = getWindowManager().getCurrentWindowMetrics().getBounds().width();
+        UiOverlays.showForm(dialog, secure, motionEnabled(), Math.min(dp(520), width - dp(24)));
+        trackDialog(dialog);
         positive.setOnClickListener(v -> {
             if (savingLocalData()) return;
             try {
@@ -3517,18 +3605,28 @@ public final class MainActivity extends Activity {
                         if (neutral != null) neutral.setEnabled(true);
                         dialog.setCancelable(true);
                         dialog.setCanceledOnTouchOutside(true);
-                        errorText.setText("无法保存本机配置。");
-                        errorText.setVisibility(View.VISIBLE);
+                        showFormError(scroll, errorText, "无法保存本机配置。");
                     }
                 });
             } catch (IllegalArgumentException error) {
-                errorText.setText(error.getMessage());
-                errorText.setVisibility(View.VISIBLE);
+                showFormError(scroll, errorText, error.getMessage());
             } catch (IllegalStateException error) {
-                errorText.setText("无法保存本机配置。");
-                errorText.setVisibility(View.VISIBLE);
+                showFormError(scroll, errorText, "无法保存本机配置。");
             }
         });
+    }
+
+    private LinearLayout.LayoutParams formButtonLayout() {
+        var layout = new LinearLayout.LayoutParams(0, WRAP, 1);
+        layout.setMarginStart(dp(4));
+        layout.setMarginEnd(dp(4));
+        return layout;
+    }
+
+    private void showFormError(ScrollView scroll, TextView label, String message) {
+        label.setText(message);
+        label.setVisibility(View.VISIBLE);
+        scroll.post(() -> scroll.scrollTo(0, scroll.getChildAt(0).getHeight()));
     }
 
     private MaterialAlertDialogBuilder dialogBuilder() {
@@ -3543,8 +3641,15 @@ public final class MainActivity extends Activity {
     }
 
     private void trackDialog(Dialog dialog) {
+        trackDialog(dialog, () -> {});
+    }
+
+    private void trackDialog(Dialog dialog, Runnable dismissed) {
         openDialogs.add(dialog);
-        dialog.setOnDismissListener(dismissed -> openDialogs.remove(dialog));
+        dialog.setOnDismissListener(ignored -> {
+            openDialogs.remove(dialog);
+            dismissed.run();
+        });
     }
 
     private void settings(LinearLayout body) {

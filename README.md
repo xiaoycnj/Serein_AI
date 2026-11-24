@@ -110,6 +110,8 @@ adb install -r .\outputs\Serein-Alpha-0.0.25.apk
 
 按 `adb devices` 替换序列号。脚本构建独立的 `app.serein.chat.chatqa`，使用宿主机本地 HTTPS 夹具和合成消息，不需要 API Key，不修改系统证书或正式安装。它按设备串行检查发送确认、连续发送、断流、停止、重试、前后台切换、冷启动回读和密集 Markdown；结束后卸载测试包。请求顺序记录留在 `outputs/chat-regression/`。加 `-CaptureUi` 可在同一目录下保存键盘打开、等待、双轮正文、断流和流式生成的截图。在线服务商冒烟测试仍需另跑。
 
+加 `-Navigation` 可检查长模型表单在 IME 打开时能保存、侧栏键盘焦点不会跑到背景、两个弹层能还原焦点，以及横屏和返回路径。此模式需要从竖屏启动，会在测试后恢复旋转设置；已启用手势导航时也会检查应用侧滑，并区分原生边缘返回和返回键。它不替代读屏实测。
+
 发行打包使用 `./scripts/build-alpha.ps1 -RunChatTests -Release`，输出到 `outputs/release/`。构建需要仓库外的签名库（别名 `serein-release`）；通过 `SEREIN_RELEASE_KEYSTORE` 和 `SEREIN_RELEASE_STORE_PASS` 提供路径和密码。
 
 在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。可在正文出现后点停止，重开会话确认部分回复和停止标记仍在。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。

@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^emulator-[0-9]+$')][string[]]$Serial,
     [string]$SdkDir = $env:ANDROID_HOME,
-    [switch]$CaptureUi
+    [switch]$CaptureUi,
+    [switch]$Navigation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -174,7 +175,16 @@ function Configure-Provider([string]$base) {
     Type-Field '服务商名称' 'Local Fixture'
     Type-Field 'HTTPS 根地址（含 API 路径）' $base
     Tap '保存'
-    Tap '拉取模型列表'
+    if ($Navigation) {
+        Tap '手动添加模型'
+        Type-Field '模型 ID' 'serein-fixture' -KeepKeyboard
+        Wait-For 'model form footer with keyboard open' { param($ui)
+            (Find-Node $ui '保存').enabled -eq 'true' -and (Find-Node $ui '取消') -and
+                (Device shell dumpsys input_method | Select-String 'mInputShown=true' -Quiet)
+        } | Out-Null
+        Capture '06-model-form-ime'
+        Tap '保存'
+    } else { Tap '拉取模型列表' }
     Wait-For 'fixture model in provider settings' { param($ui) Find-Node $ui 'serein-fixture' } | Out-Null
     Tap '返回'
     Tap '返回'
@@ -183,6 +193,75 @@ function Configure-Provider([string]$base) {
     Tap '选择模型，当前 离线演示'
     Tap 'serein-fixture'
     Wait-For 'selected fixture model' { param($ui) Find-Node $ui '选择模型，当前 serein-fixture' } | Out-Null
+}
+
+function Check-Navigation {
+    $model = '选择模型，当前 serein-fixture'
+    Tap '会话'
+    Wait-For 'drawer close control' { param($ui) Find-Node $ui '关闭侧栏' 'android.widget.Button' } | Out-Null
+    $focusTargets = @()
+    for ($i = 0; $i -lt 5; $i++) {
+        Device shell input keyevent KEYCODE_TAB | Out-Null
+        $ui = Screen
+        $close = Find-Node $ui '关闭侧栏' 'android.widget.Button'
+        $focused = $close.ParentNode.ParentNode.SelectSingleNode(".//node[@focused='true']")
+        if (!$focused) { throw 'Keyboard focus escaped the drawer' }
+        $focusTargets += $focused.bounds
+    }
+    if (($focusTargets | Sort-Object -Unique).Count -lt 3) { throw 'Keyboard could not move between drawer controls' }
+    Capture '07-sidebar'
+    Back
+    Wait-For 'drawer focus restored' { param($ui)
+        !(Find-Node $ui '关闭侧栏' 'android.widget.Button') -and (Find-Node $ui '会话').focused -eq 'true'
+    } | Out-Null
+
+    Tap $model
+    Type-Field '搜索模型' 'serein-fixture' -KeepKeyboard
+    Wait-For 'filtered model visible with picker keyboard' { param($ui)
+        (Find-Node $ui 'serein-fixture') -and !(Find-Node $ui '离线演示') -and (Find-Node $ui '关闭模型选择')
+    } | Out-Null
+    Capture '08-model-picker-ime'
+    Back
+    Device shell input keyevent KEYCODE_TAB | Out-Null
+    Back
+    Wait-For 'picker focus restored' { param($ui) (Find-Node $ui $model).focused -eq 'true' } | Out-Null
+    Write-Output 'PASS: model form saved with IME, keyboard focus stayed in drawer, and both overlays restored focus'
+
+    if ((Device shell settings get secure navigation_mode) -eq '2') {
+        $scale = [int]((Device shell wm density | Select-Object -Last 1) -replace '^.*: ', '') / 160.0
+        Device shell input swipe ([int](60 * $scale)) ([int](160 * $scale)) ([int](190 * $scale)) ([int](160 * $scale)) 260 | Out-Null
+        Wait-For 'drawer opened from inside the system back edge' { param($ui) Find-Node $ui '关闭侧栏' 'android.widget.Button' } | Out-Null
+        $hasBackEdge = Device shell dumpsys activity service com.android.systemui/.SystemUIService |
+            Select-String 'mEdgeWidthLeft=[1-9][0-9]*' -Quiet
+        if ($hasBackEdge) {
+            Device shell input swipe 4 ([int](160 * $scale)) ([int](125 * $scale)) ([int](160 * $scale)) 280 | Out-Null
+        } else { Back }
+        Wait-For 'Android Back closed the swipe-opened drawer' { param($ui)
+            (Find-Node $ui $model) -and !(Find-Node $ui '关闭侧栏' 'android.widget.Button')
+        } | Out-Null
+        if ($hasBackEdge) { Write-Output 'PASS: in-app drawer swipe and system edge Back both worked' }
+        else { Write-Output 'PASS: in-app drawer swipe and Back key; native edge Back unavailable in this emulator' }
+    }
+
+    $rotation = ((Device shell cmd window user-rotation) -join '').Trim()
+    if ($rotation -notmatch '^(free|lock [0-3])$') { throw "Unexpected rotation setting: $rotation" }
+    if ((Screen).hierarchy.rotation -ne '0') { throw 'Start the navigation regression in portrait' }
+    try {
+        Device shell cmd window user-rotation lock 1 | Out-Null
+        Wait-For 'landscape chat' { param($ui) $ui.hierarchy.rotation -eq '1' -and (Find-Node $ui $model) } | Out-Null
+        Tap '会话'
+        Wait-For 'settings available in landscape sidebar' { param($ui) Find-Node $ui '设置' } | Out-Null
+        Capture '09-landscape-sidebar'
+        Tap '关闭侧栏' 'android.widget.Button'
+        Tap $model
+        Wait-For 'landscape picker search and close' { param($ui)
+            (Find-Node $ui '搜索模型') -and (Find-Node $ui '关闭模型选择')
+        } | Out-Null
+        Capture '10-landscape-picker'
+        Tap '关闭模型选择'
+    } finally { Device shell cmd window user-rotation @($rotation -split ' ') | Out-Null }
+    Wait-For 'portrait after rotation restored' { param($ui) $ui.hierarchy.rotation -eq '0' -and (Find-Node $ui $model) } | Out-Null
+    Write-Output 'PASS: sidebar and model picker are usable in landscape and restore to portrait'
 }
 
 function Check-Delivery([string]$base) {
@@ -195,6 +274,7 @@ function Run-Scenarios([string]$base) {
     Start-App
     $initialProcess = App-Process
     Configure-Provider $base
+    if ($Navigation) { Check-Navigation }
     Send 'First' -KeepKeyboard
     Check-Delivery $base
     Tap '取消'
