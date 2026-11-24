@@ -29,8 +29,8 @@ android {
         applicationId 'app.serein.chat'
         minSdk 33
         targetSdk 36
-        versionCode 22
-        versionName '0.0.22-alpha'
+        versionCode 23
+        versionName '0.0.23-alpha'
     }
 
     compileOptions {
@@ -64,7 +64,7 @@ def chatChecksClasses = tasks.register('compileChatChecks', JavaCompile) {
     options.encoding = 'UTF-8'
 }
 def chatChecks = tasks.register('chatChecks')
-['ModelApiStreamCheck', 'ChatFeatureCheck', 'IuiCheck', 'AstraPortCheck', 'DrawerSwipeCheck', 'AppearanceCheck', 'WebSearchCheck', 'UpdateImageCheck', 'ChatToolsCheck', 'ChatLocalContextCheck', 'ChatDeliveryCheck'].each { check ->
+['ModelApiStreamCheck', 'ChatFeatureCheck', 'IuiCheck', 'AstraPortCheck', 'DrawerSwipeCheck', 'AppearanceCheck', 'WebSearchCheck', 'UpdateImageCheck', 'ChatToolsCheck', 'ChatLocalContextCheck', 'ChatDeliveryCheck', 'LocalWriteCheck'].each { check ->
     def runCheck = tasks.register("run${check}", JavaExec) {
         dependsOn chatChecksClasses
         classpath = files(chatChecksClasses.flatMap { it.destinationDirectory }, chatChecksClasses.map { it.classpath })

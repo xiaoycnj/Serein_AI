@@ -75,10 +75,10 @@ final class IuiCheck {
 
         var disk = new AtomicReference<>("{\"history\":[],\"active\":\"\"}");
         ChatStore store = new ChatStore(disk.get(), disk::set);
-        store.append(-1, "Question", "", "Serein", null, card);
+        store.append(-1, "Question", "", "Serein", null, card).commit();
         var original = store.active;
-        store.updateCard(original, 0, "steps/break", true);
-        store.updateCard(original, 0, "pick", "now");
+        store.updateCard(original, 0, "steps/break", true).commit();
+        store.updateCard(original, 0, "pick", "now").commit();
         Map<String, Object> state = original.history.turn(0).cardState();
         equal(card.draft(state), "Plan\n- Take a break\n- Start now");
         var model = new Providers.Model("test", "none", "", "", "");
@@ -86,23 +86,23 @@ final class IuiCheck {
                 .getJSONArray("messages").getJSONObject(1).getString("content");
         equal(prior, card.transcript());
         equal(prior.contains("steps/break"), false);
-        store.append(-1, "Question", "", "Serein", null, card);
+        store.append(-1, "Question", "", "Serein", null, card).commit();
         equal(original.history.turn(1).cardState(), Map.of());
         try {
-            store.updateCard(original, 0, "pick", "now");
+            store.updateCard(original, 0, "pick", "now").commit();
             throw new AssertionError("Modified a hidden version");
         } catch (IllegalStateException expected) { }
-        store.selectVersion(0);
+        store.selectVersion(0).commit();
         ChatStore restored = new ChatStore(disk.get(), disk::set);
         equal(restored.active.history.turn(0).cardState(), state);
         ChatStore failing = new ChatStore(disk.get(), ignored -> { throw new IllegalStateException("write failure"); });
         try {
-            failing.updateCard(failing.active, 0, "steps/break", false);
+            failing.updateCard(failing.active, 0, "steps/break", false).commit();
             throw new AssertionError("Swallowed write failure");
         } catch (IllegalStateException expected) {
             equal(failing.active.history.turn(0).cardState(), state);
         }
-        restored.delete(restored.active);
+        restored.delete(restored.active).commit();
         equal(new ChatStore(disk.get(), disk::set).recent.size(), 0);
         System.out.println("PASS: local card state restores, rolls back and stays isolated by reply version");
     }

@@ -104,15 +104,15 @@ final class Providers {
         return null;
     }
 
-    void select(Provider provider, Model model) {
-        update(new ArrayList<>(all), provider == null ? "" : provider.id, model == null ? "" : model.id());
+    LocalWrite.Change select(Provider provider, Model model) {
+        return update(all, provider == null ? "" : provider.id, model == null ? "" : model.id());
     }
 
-    void put(Provider provider) {
-        put(provider, "", "");
+    LocalWrite.Change put(Provider provider) {
+        return put(provider, "", "");
     }
 
-    void put(Provider provider, String previousModelId, String newModelId) {
+    LocalWrite.Change put(Provider provider, String previousModelId, String newModelId) {
         List<Provider> next = new ArrayList<>(all);
         int index = next.indexOf(get(provider.id));
         if (index < 0) next.add(provider);
@@ -121,17 +121,27 @@ final class Providers {
         String activeModel = activeProvider && previousModelId.equals(selectedModel) ? newModelId : selectedModel;
         boolean selectedRemoved = activeProvider
                 && provider.models.stream().noneMatch(model -> model.id().equals(activeModel));
-        update(next, selectedRemoved ? "" : selectedProvider, selectedRemoved ? "" : activeModel);
+        return update(next, selectedRemoved ? "" : selectedProvider, selectedRemoved ? "" : activeModel);
     }
 
-    void remove(Provider provider) {
+    LocalWrite.Change remove(Provider provider) {
         List<Provider> next = new ArrayList<>(all);
         next.removeIf(item -> item.id.equals(provider.id));
-        update(next, selectedProvider.equals(provider.id) ? "" : selectedProvider,
+        return update(next, selectedProvider.equals(provider.id) ? "" : selectedProvider,
                 selectedProvider.equals(provider.id) ? "" : selectedModel);
     }
 
-    private void update(List<Provider> next, String providerId, String modelId) {
+    private LocalWrite.Change update(List<Provider> next, String providerId, String modelId) {
+        List<Provider> snapshot = List.copyOf(next);
+        return new LocalWrite.Change(() -> write(snapshot, providerId, modelId), () -> {
+            all.clear();
+            all.addAll(snapshot);
+            selectedProvider = providerId;
+            selectedModel = modelId;
+        });
+    }
+
+    private void write(List<Provider> next, String providerId, String modelId) {
         try {
             JSONArray list = new JSONArray();
             for (Provider provider : next) {
@@ -149,9 +159,5 @@ final class Providers {
         } catch (JSONException error) {
             throw new IllegalStateException("无法保存服务商配置", error);
         }
-        all.clear();
-        all.addAll(next);
-        selectedProvider = providerId;
-        selectedModel = modelId;
     }
 }

@@ -28,7 +28,7 @@ final class FileSpace {
             "jpeg", "image/jpeg", "webp", "image/webp");
     private final Vault vault;
     private final File directory;
-    private List<ChatFile> catalog;
+    private volatile List<ChatFile> catalog;
 
     FileSpace(Context context, Vault vault) {
         this.vault = vault;
@@ -37,7 +37,7 @@ final class FileSpace {
         catch (JSONException | IllegalArgumentException error) { throw new IllegalStateException("无法读取本机资料库", error); }
     }
 
-    synchronized List<ChatFile> library() { return catalog; }
+    List<ChatFile> library() { return catalog; }
 
     synchronized ChatFile copyToChat(ChatFile source) throws Exception {
         if (!catalog.contains(source)) throw new FileNotFoundException("资料已移除。");
@@ -150,7 +150,7 @@ final class FileSpace {
         } finally { Arrays.fill(data, (byte) 0); }
     }
 
-    synchronized boolean exists(ChatFile item) { return file(item.id()).getBaseFile().isFile(); }
+    boolean exists(ChatFile item) { return file(item.id()).getBaseFile().isFile(); }
 
     synchronized void removeLibrary(ChatFile item) {
         if (!catalog.contains(item)) return;

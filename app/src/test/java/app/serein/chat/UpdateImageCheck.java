@@ -132,10 +132,10 @@ final class UpdateImageCheck {
         var disk = new java.util.concurrent.atomic.AtomicReference<>("{\"history\":[],\"active\":\"\"}");
         var store = new ChatStore(disk.get(), disk::set);
         var image = new GeneratedImage("ab".repeat(16), "provider", "image-model", "1024x1024", "image/png");
-        store.append(-1, "draw", "已生成图片", "image-model", null, null, ChatHistory.ReplyState.COMPLETE, null, image);
+        store.append(-1, "draw", "已生成图片", "image-model", null, null, ChatHistory.ReplyState.COMPLETE, null, image).commit();
         var original = store.active;
-        store.fork(original, 0);
-        store.delete(original);
+        store.fork(original, 0).commit();
+        store.delete(original).commit();
         var restored = new ChatStore(disk.get(), disk::set);
         var refs = new HashSet<String>();
         restored.active.history.collectImageIds(refs);

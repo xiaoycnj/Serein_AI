@@ -23,7 +23,7 @@ final class ChatMemory {
     enum Outcome { SAVED, ALREADY_SAVED, UNSUITABLE, FULL }
 
     private final Consumer<String> persist;
-    private List<Entry> entries;
+    private volatile List<Entry> entries;
 
     ChatMemory(Vault vault) { this(vault.read("memory", "[]"), data -> vault.write("memory", data)); }
 
@@ -43,7 +43,7 @@ final class ChatMemory {
         } catch (JSONException error) { throw new IllegalStateException("无法读取本机记忆", error); }
     }
 
-    synchronized List<Entry> entries() { return entries; }
+    List<Entry> entries() { return entries; }
 
     synchronized Outcome assess(String note, String userMessage) {
         String text = note.strip();

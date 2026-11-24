@@ -29,26 +29,26 @@ final class AstraPortCheck {
         ChatCard card = ChatCard.parse("""
                 {"title":"Options","blocks":[{"id":"tasks","type":"checklist","items":[{"id":"one","label":"First"}]}]}
                 """);
-        store.append(-1, "Original", "", "model", new ChatContext.Checkpoint("provider", 0, "old summary"), card);
+        store.append(-1, "Original", "", "model", new ChatContext.Checkpoint("provider", 0, "old summary"), card).commit();
         ChatStore.Chat source = store.active;
-        store.updateCard(source, 0, "tasks/one", true);
-        store.append(0, "Second", "partial", "model", null, null, ChatHistory.ReplyState.STOPPED);
-        store.append(1, "Later", "not copied", "model", null);
-        store.append(0, "Other version", "not copied", "model", null);
-        store.selectVersion(1);
-        store.pin(source, true);
+        store.updateCard(source, 0, "tasks/one", true).commit();
+        store.append(0, "Second", "partial", "model", null, null, ChatHistory.ReplyState.STOPPED).commit();
+        store.append(1, "Later", "not copied", "model", null).commit();
+        store.append(0, "Other version", "not copied", "model", null).commit();
+        store.selectVersion(1).commit();
+        store.pin(source, true).commit();
 
         writable.set(false);
-        failure(() -> store.archive(source, true));
+        failure(() -> store.archive(source, true).commit());
         equal(store.active, source);
         equal(source.archived, false);
-        failure(() -> store.fork(source, 1));
+        failure(() -> store.fork(source, 1).commit());
         equal(store.active, source);
         equal(store.recent, List.of(source));
         writable.set(true);
 
-        failure(() -> store.fork(source, 3));
-        store.fork(source, 1);
+        failure(() -> store.fork(source, 3).commit());
+        store.fork(source, 1).commit();
         ChatStore.Chat branch = store.active;
         equal(branch.id.equals(source.id), false);
         equal(branch.pinned, false);
@@ -58,12 +58,12 @@ final class AstraPortCheck {
         equal(source.history.path(source.history.leaf()), List.of(0, 1, 2));
         equal(branch.history.turn(1).replyState(), ChatHistory.ReplyState.STOPPED);
         equal(branch.history.turn(0).cardState(), Map.of("tasks/one", true));
-        store.updateCard(branch, 0, "tasks/one", false);
+        store.updateCard(branch, 0, "tasks/one", false).commit();
         equal(source.history.turn(0).cardState(), Map.of("tasks/one", true));
 
-        store.archive(source, true);
+        store.archive(source, true).commit();
         equal(store.active, branch);
-        store.archive(branch, true);
+        store.archive(branch, true).commit();
         equal(store.active, null);
         ChatStore restored = new ChatStore(disk.get(), disk::set);
         ChatStore.Chat original = restored.recent.get(0);
@@ -71,9 +71,9 @@ final class AstraPortCheck {
         equal(original.pinned, true);
         equal(original.archived, true);
         equal(restored.recent.size(), 2);
-        restored.open(original);
+        restored.open(original).commit();
         equal(original.archived, true);
-        restored.archive(original, false);
+        restored.archive(original, false).commit();
         equal(original.archived, false);
         equal(original.history.write().length(), 4);
         equal(original.history.turn(0).cardState(), Map.of("tasks/one", true));
@@ -83,12 +83,12 @@ final class AstraPortCheck {
 
     private static void search() {
         ChatStore store = new ChatStore(EMPTY, ignored -> {});
-        store.append(-1, "first question", "雨后 report", "model", null);
+        store.append(-1, "first question", "雨后 report", "model", null).commit();
         ChatStore.Chat chat = store.active;
-        store.rename(chat, "ＢＥＴＡ sessions");
-        store.append(0, "visible phrase", "Emoji " + "\ud83d\udc4b".repeat(50) + " can be found", "model", null);
-        store.append(0, "hidden variant", "private version", "model", null);
-        store.selectVersion(1);
+        store.rename(chat, "ＢＥＴＡ sessions").commit();
+        store.append(0, "visible phrase", "Emoji " + "\ud83d\udc4b".repeat(50) + " can be found", "model", null).commit();
+        store.append(0, "hidden variant", "private version", "model", null).commit();
+        store.selectVersion(1).commit();
 
         var snapshot = ChatSearch.snapshot(store.recent);
         var hit = ChatSearch.find(snapshot, "ｂｅｔａ　雨后", false).hits().get(0);
@@ -105,11 +105,11 @@ final class AstraPortCheck {
         equal(excerpt.contains("can be found"), true);
         equal(wellFormed(excerpt), true);
 
-        store.archive(chat, true);
+        store.archive(chat, true).commit();
         snapshot = ChatSearch.snapshot(store.recent);
         equal(ChatSearch.find(snapshot, "report", false).hits().isEmpty(), true);
         equal(ChatSearch.find(snapshot, "report", true).hits().get(0).source().archived(), true);
-        store.delete(chat);
+        store.delete(chat).commit();
         equal(ChatSearch.find(ChatSearch.snapshot(store.recent), "report", true).hits().isEmpty(), true);
 
         List<ChatSearch.Source> sources = new ArrayList<>();
@@ -184,15 +184,15 @@ final class AstraPortCheck {
         ChatCard card = ChatCard.parse("""
                 {"title":"Public card","blocks":[{"id":"internal","type":"choices","items":[{"id":"secret","label":"Visible label"}]}]}
                 """);
-        store.append(-1, "visible prompt", "visible answer", "<model>", new ChatContext.Checkpoint("scope", 0, "hidden summary"), card);
+        store.append(-1, "visible prompt", "visible answer", "<model>", new ChatContext.Checkpoint("scope", 0, "hidden summary"), card).commit();
         ChatStore.Chat chat = store.active;
-        store.rename(chat, "Safe # title");
-        store.updateCard(chat, 0, "internal", "secret");
-        store.append(0, "another visible prompt", "fragment", "Serein", null, null, ChatHistory.ReplyState.INTERRUPTED);
-        store.append(0, "hidden version", "should not be included", "Serein", null);
-        store.selectVersion(1);
+        store.rename(chat, "Safe # title").commit();
+        store.updateCard(chat, 0, "internal", "secret").commit();
+        store.append(0, "another visible prompt", "fragment", "Serein", null, null, ChatHistory.ReplyState.INTERRUPTED).commit();
+        store.append(0, "hidden version", "should not be included", "Serein", null).commit();
+        store.selectVersion(1).commit();
         var file = ChatArtifacts.conversation(chat);
-        store.selectVersion(2);
+        store.selectVersion(2).commit();
         String markdown = write(file);
         equal(markdown.startsWith("# Safe \\# title\n"), true);
         equal(markdown.contains("## \\<model\\>"), true);
@@ -204,8 +204,8 @@ final class AstraPortCheck {
             equal(markdown.contains(hidden), false);
         }
         var truncated = new ChatStore(EMPTY, ignored -> {});
-        truncated.append(-1, "code", "~~~~js\npartial();", "model", null, null, ChatHistory.ReplyState.STOPPED);
-        truncated.append(0, "Next", "~~~\ncomplete();\n~~~", "model", null);
+        truncated.append(-1, "code", "~~~~js\npartial();", "model", null, null, ChatHistory.ReplyState.STOPPED).commit();
+        truncated.append(0, "Next", "~~~\ncomplete();\n~~~", "model", null).commit();
         String interrupted = write(ChatArtifacts.conversation(truncated.active));
         equal(interrupted.contains("partial();\n~~~~\n\n> 已停止生成\n\n## 你\n\nNext"), true);
         equal(interrupted.contains("complete();\n~~~\n"), true);
@@ -220,7 +220,7 @@ final class AstraPortCheck {
         var blocks = ChatArtifacts.blocks(reply);
         equal(blocks.items(), List.of(new ChatArtifacts.CodeBlock("text", "Code after the table.\n")));
         var store = new ChatStore(EMPTY, ignored -> {});
-        store.append(-1, "Table result", reply, "model", null);
+        store.append(-1, "Table result", reply, "model", null).commit();
         equal(store.active.history.turn(0).reply(), reply);
         equal(write(ChatArtifacts.conversation(store.active)).contains(reply), true);
         System.out.println("PASS: oversized sparse tables skip GFM expansion and full Markdown is preserved");

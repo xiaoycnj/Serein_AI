@@ -26,18 +26,18 @@ final class ChatFeatureCheck {
         equal(first.consumesDraft("failed prompt"), true);
         equal(first.consumesDraft("a new draft"), false);
 
-        store.append(-1, "question", "complete", "model", null);
+        store.append(-1, "question", "complete", "model", null).commit();
         var chat = store.active;
         equal(first.matches(chat), false);
         var edited = new ReplyRetry(chat, -1, "edited prompt", false);
         equal(edited.matches(chat), true);
         equal(edited.parent(), -1);
         equal(edited.consumesDraft("edited prompt"), false);
-        store.append(0, "follow-up", "received", "model", null, null, ChatHistory.ReplyState.STOPPED);
+        store.append(0, "follow-up", "received", "model", null, null, ChatHistory.ReplyState.STOPPED).commit();
         var retry = new ReplyRetry(chat, 0, "replacement", true);
         equal(edited.matches(chat), false);
         equal(retry.matches(chat), true);
-        store.append(0, "follow-up", "another fragment", "model", null, null, ChatHistory.ReplyState.INTERRUPTED);
+        store.append(0, "follow-up", "another fragment", "model", null, null, ChatHistory.ReplyState.INTERRUPTED).commit();
         equal(retry.matches(chat), false);
 
         var loaded = new ChatStore(disk.get(), disk::set);
@@ -50,23 +50,23 @@ final class ChatFeatureCheck {
         equal(partial.parent(), 0);
         equal(partial.prompt(), "follow-up");
         equal(partial.consumesDraft("follow-up"), false);
-        loaded.append(partial.parent(), partial.prompt(), "recovered", "model", null);
+        loaded.append(partial.parent(), partial.prompt(), "recovered", "model", null).commit();
         equal(loaded.active.history.path(loaded.active.history.leaf()), List.of(0, 3));
         equal(loaded.active.history.variants(3), List.of(1, 2, 3));
         equal(loaded.active.history.turn(2).reply(), "another fragment");
         equal(partial.matches(loaded.active), false);
-        loaded.selectVersion(1);
+        loaded.selectVersion(1).commit();
         equal(loaded.active.history.leaf(), 1);
         equal(loaded.active.history.turn(1).reply(), "received");
         equal(loaded.active.history.turn(1).assistantText(), "received");
         equal(loaded.active.history.write().getJSONObject(0).has("replyState"), false);
         equal(retry.matches(loaded.active), false);
-        loaded.open(null);
+        loaded.open(null).commit();
         equal(retry.matches(loaded.active), false);
 
         var failing = new ChatStore(disk.get(), ignored -> { throw new IllegalStateException("write failure"); });
         try {
-            failing.append(-1, "unsaved", "partial", "model", null, null, ChatHistory.ReplyState.INTERRUPTED);
+            failing.append(-1, "unsaved", "partial", "model", null, null, ChatHistory.ReplyState.INTERRUPTED).commit();
             throw new AssertionError("Expected append failure");
         } catch (IllegalStateException expected) {
             equal(failing.active, null);
@@ -79,14 +79,14 @@ final class ChatFeatureCheck {
         var disk = new java.util.concurrent.atomic.AtomicReference<>("{\"history\":[],\"active\":\"\"}");
         ChatStore store = new ChatStore(disk.get(), disk::set);
         var checkpoint = new ChatContext.Checkpoint("provider/model", 0, "old summary");
-        store.append(-1, "first", "answer", "model", checkpoint);
-        store.append(-1, "first", "another answer", "model", null);
+        store.append(-1, "first", "answer", "model", checkpoint).commit();
+        store.append(-1, "first", "another answer", "model", null).commit();
         ChatStore.Chat first = store.active;
-        store.open(null);
-        store.append(-1, "second", "another chat", "model", null);
+        store.open(null).commit();
+        store.append(-1, "second", "another chat", "model", null).commit();
         ChatStore.Chat second = store.active;
         long originalTime = first.updatedAt;
-        store.rename(first, "  Renamed\nchat  ");
+        store.rename(first, "  Renamed\nchat  ").commit();
         equal(first.updatedAt, originalTime);
         equal(store.recent, List.of(second, first));
 
@@ -97,18 +97,18 @@ final class ChatFeatureCheck {
         equal(renamed.history.variants(1), List.of(0, 1));
         equal(renamed.checkpoint, checkpoint);
         equal(reloaded.active.id, second.id);
-        reloaded.pin(renamed, true);
-        reloaded.append(reloaded.active.history.leaf(), "second follow-up", "recent answer", "model", null);
+        reloaded.pin(renamed, true).commit();
+        reloaded.append(reloaded.active.history.leaf(), "second follow-up", "recent answer", "model", null).commit();
         equal(reloaded.recent.get(0), renamed);
         equal(reloaded.recent.get(1), reloaded.active);
         ChatStore pinnedReload = new ChatStore(disk.get(), disk::set);
         equal(pinnedReload.recent.get(0).title, "Renamed chat");
         equal(pinnedReload.recent.get(0).pinned, true);
-        pinnedReload.pin(pinnedReload.recent.get(0), false);
+        pinnedReload.pin(pinnedReload.recent.get(0), false).commit();
         equal(pinnedReload.recent.get(0).title, "second");
         equal(pinnedReload.recent.get(0).pinned, false);
         try {
-            reloaded.rename(renamed, " \n ");
+            reloaded.rename(renamed, " \n ").commit();
             throw new AssertionError("Blank title accepted");
         } catch (IllegalArgumentException expected) {
             equal(renamed.title, "Renamed chat");
@@ -117,8 +117,8 @@ final class ChatFeatureCheck {
         ChatStore failing = new ChatStore(disk.get(), saved -> { throw new IllegalStateException("test write failure"); });
         ChatStore.Chat current = failing.active;
         List<ChatStore.Chat> before = List.copyOf(failing.recent);
-        for (Runnable mutation : List.<Runnable>of(() -> failing.rename(current, "Unsaved"),
-                () -> failing.pin(current, true), () -> failing.delete(current))) {
+        for (Runnable mutation : List.<Runnable>of(() -> failing.rename(current, "Unsaved").commit(),
+                () -> failing.pin(current, true).commit(), () -> failing.delete(current).commit())) {
             try {
                 mutation.run();
                 throw new AssertionError("Write failure was swallowed");
@@ -130,13 +130,13 @@ final class ChatFeatureCheck {
             }
         }
 
-        reloaded.delete(renamed);
+        reloaded.delete(renamed).commit();
         equal(reloaded.active.id, second.id);
         equal(reloaded.recent.size(), 1);
         JSONArray remaining = new JSONObject(disk.get()).getJSONArray("history");
         equal(remaining.length(), 1);
         equal(remaining.getJSONObject(0).getString("id"), second.id);
-        reloaded.delete(reloaded.active);
+        reloaded.delete(reloaded.active).commit();
         ChatStore empty = new ChatStore(disk.get(), disk::set);
         equal(empty.active, null);
         equal(empty.recent.size(), 0);

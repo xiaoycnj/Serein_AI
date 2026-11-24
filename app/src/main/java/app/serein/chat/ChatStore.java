@@ -32,13 +32,16 @@ final class ChatStore {
         }
     }
 
+    private record SavedChat(String id, String title, long updatedAt, boolean pinned, boolean archived,
+                             ChatContext.Checkpoint checkpoint, ChatHistory.Snapshot history) {}
+
     private final Consumer<String> persist;
     final List<Chat> recent = new ArrayList<>();
     Chat active;
 
     ChatStore(SharedPreferences prefs, Vault vault) {
         this(load(prefs, vault), json -> vault.write("chat", json, "history", "active_chat"));
-        if (prefs.contains("history") || prefs.contains("active_chat")) save();
+        if (prefs.contains("history") || prefs.contains("active_chat")) write(snapshot(), activeId());
     }
 
     private static String load(SharedPreferences prefs, Vault vault) {
@@ -76,29 +79,27 @@ final class ChatStore {
         }
     }
 
-    void open(Chat chat) {
+    LocalWrite.Change open(Chat chat) {
         if (chat != null && !recent.contains(chat)) throw new IllegalStateException("会话不存在");
         Chat previous = active;
-        active = chat;
-        try { save(); }
-        catch (RuntimeException error) { active = previous; throw error; }
+        if (previous == chat) return LocalWrite.Change.NONE;
+        return change(() -> active = chat, () -> active = previous);
     }
 
-    void archive(Chat chat, boolean archived) {
+    LocalWrite.Change archive(Chat chat, boolean archived) {
         if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
-        if (chat.archived == archived) return;
+        if (chat.archived == archived) return LocalWrite.Change.NONE;
         Chat previous = active;
-        chat.archived = archived;
-        if (archived && active == chat) active = null;
-        try { save(); }
-        catch (RuntimeException error) {
+        return change(() -> {
+            chat.archived = archived;
+            if (archived && active == chat) active = null;
+        }, () -> {
             chat.archived = !archived;
             active = previous;
-            throw error;
-        }
+        });
     }
 
-    void fork(Chat source, int through) {
+    LocalWrite.Change fork(Chat source, int through) {
         if (source != active || source == null || through < 0) throw new IllegalStateException("会话已切换");
         List<Integer> path = source.history.path(source.history.leaf());
         int end = path.indexOf(through);
@@ -113,123 +114,123 @@ final class ChatStore {
         String title = source.title;
         if (title.codePointCount(0, title.length()) > max) title = title.substring(0, title.offsetByCodePoints(0, max));
         Chat branch = new Chat(UUID.randomUUID().toString(), title + suffix, System.currentTimeMillis(), history);
-        active = branch;
-        insertRecent(branch);
-        try { save(); }
-        catch (RuntimeException error) {
+        return change(() -> {
+            active = branch;
+            insertRecent(branch);
+        }, () -> {
             recent.remove(branch);
             active = source;
-            throw error;
-        }
+        });
     }
 
-    void rename(Chat chat, String name) {
+    LocalWrite.Change rename(Chat chat, String name) {
         if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
         String title = name.replaceAll("\\R", " ").strip();
         if (title.isBlank() || title.codePointCount(0, title.length()) > MAX_TITLE_LENGTH) {
             throw new IllegalArgumentException("请输入 1–" + MAX_TITLE_LENGTH + " 个字符的标题。");
         }
         String previous = chat.title;
-        if (title.equals(previous)) return;
-        chat.title = title;
-        try { save(); }
-        catch (RuntimeException error) { chat.title = previous; throw error; }
+        if (title.equals(previous)) return LocalWrite.Change.NONE;
+        return change(() -> chat.title = title, () -> chat.title = previous);
     }
 
-    void pin(Chat chat, boolean pinned) {
+    LocalWrite.Change pin(Chat chat, boolean pinned) {
         if (!recent.contains(chat)) throw new IllegalStateException("会话不存在");
-        if (chat.pinned == pinned) return;
+        if (chat.pinned == pinned) return LocalWrite.Change.NONE;
         int position = recent.indexOf(chat);
-        recent.remove(position);
-        chat.pinned = pinned;
-        insertRecent(chat);
-        try { save(); }
-        catch (RuntimeException error) {
+        return change(() -> {
+            recent.remove(chat);
+            chat.pinned = pinned;
+            insertRecent(chat);
+        }, () -> {
             recent.remove(chat);
             chat.pinned = !pinned;
             recent.add(position, chat);
-            throw error;
-        }
+        });
     }
 
-    void delete(Chat chat) {
+    LocalWrite.Change delete(Chat chat) {
         int position = recent.indexOf(chat);
         if (position < 0) throw new IllegalStateException("会话不存在");
         Chat previous = active;
-        recent.remove(position);
-        if (active == chat) active = null;
-        try { save(); }
-        catch (RuntimeException error) {
+        return change(() -> {
+            recent.remove(chat);
+            if (active == chat) active = null;
+        }, () -> {
             recent.add(position, chat);
             active = previous;
-            throw error;
-        }
+        });
     }
 
-    void selectVersion(int id) {
-        int previous = active.history.leaf();
-        active.history.select(active.history.latestDescendant(id));
-        try { save(); }
-        catch (RuntimeException error) { active.history.select(previous); throw error; }
+    LocalWrite.Change selectVersion(int id) {
+        ChatHistory history = active.history;
+        int previous = history.leaf();
+        int selected = history.latestDescendant(id);
+        if (previous == selected) return LocalWrite.Change.NONE;
+        return change(() -> history.select(selected), () -> history.select(previous));
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint) {
-        append(parent, prompt, reply, model, checkpoint, null);
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint) {
+        return append(parent, prompt, reply, model, checkpoint, null);
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card) {
-        append(parent, prompt, reply, model, checkpoint, card, ChatHistory.ReplyState.COMPLETE);
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card) {
+        return append(parent, prompt, reply, model, checkpoint, card, ChatHistory.ReplyState.COMPLETE);
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState) {
-        append(parent, prompt, reply, model, checkpoint, card, replyState, null);
+        return append(parent, prompt, reply, model, checkpoint, card, replyState, null);
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState, String searchQuery) {
-        append(parent, prompt, reply, model, checkpoint, card, replyState, searchQuery, null);
+        return append(parent, prompt, reply, model, checkpoint, card, replyState, searchQuery, null);
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState, String searchQuery, GeneratedImage image) {
-        append(parent, prompt, reply, model, checkpoint, card, replyState, searchQuery, image, List.of(), List.of(), "");
+        return append(parent, prompt, reply, model, checkpoint, card, replyState, searchQuery, image, List.of(), List.of(), "");
     }
 
-    void append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
+    LocalWrite.Change append(int parent, String prompt, String reply, String model, ChatContext.Checkpoint checkpoint, ChatCard card,
                 ChatHistory.ReplyState replyState, String searchQuery, GeneratedImage image,
                 List<ChatFile> attachments, List<ChatFile> references, String imageScope) {
         Chat previous = active;
-        if (active == null) {
+        Chat target = previous;
+        if (target == null) {
             String firstLine = prompt.split("\\R", 2)[0];
             if (firstLine.isBlank() && !attachments.isEmpty()) firstLine = attachments.get(0).name();
             int length = firstLine.codePointCount(0, firstLine.length());
             String title = length <= 24 ? firstLine : firstLine.substring(0, firstLine.offsetByCodePoints(0, 24)) + "…";
-            active = new Chat(UUID.randomUUID().toString(), title, 0, new ChatHistory());
+            target = new Chat(UUID.randomUUID().toString(), title, 0, new ChatHistory());
         }
-        long oldTime = active.updatedAt;
-        int oldPosition = recent.indexOf(active);
-        int oldLeaf = active.history.leaf();
-        ChatContext.Checkpoint oldCheckpoint = active.checkpoint;
-        active.history.append(parent, new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState,
-                searchQuery, image, attachments, references, imageScope));
-        if (checkpoint != null) active.checkpoint = checkpoint;
-        active.updatedAt = System.currentTimeMillis();
-        recent.remove(active);
-        insertRecent(active);
-        try { save(); }
-        catch (RuntimeException error) {
-            recent.remove(active);
-            active.history.rollbackAppend(oldLeaf);
-            active.checkpoint = oldCheckpoint;
-            active.updatedAt = oldTime;
-            if (oldPosition >= 0) recent.add(oldPosition, active);
+        Chat chat = target;
+        long oldTime = chat.updatedAt;
+        long updated = System.currentTimeMillis();
+        int oldPosition = recent.indexOf(chat);
+        int oldLeaf = chat.history.leaf();
+        ChatContext.Checkpoint oldCheckpoint = chat.checkpoint;
+        var turn = new ChatHistory.Turn(prompt, reply, model, card, Map.of(), replyState,
+                searchQuery, image, attachments, references, imageScope);
+        return change(() -> {
+            chat.history.append(parent, turn);
+            if (checkpoint != null) chat.checkpoint = checkpoint;
+            chat.updatedAt = updated;
+            active = chat;
+            recent.remove(chat);
+            insertRecent(chat);
+        }, () -> {
+            recent.remove(chat);
+            chat.history.rollbackAppend(oldLeaf);
+            chat.checkpoint = oldCheckpoint;
+            chat.updatedAt = oldTime;
+            if (oldPosition >= 0) recent.add(oldPosition, chat);
             active = previous;
-            throw error;
-        }
+        });
     }
 
-    void updateCard(Chat chat, int id, String key, Object value) {
+    LocalWrite.Change updateCard(Chat chat, int id, String key, Object value) {
         if (active != chat || !chat.history.path(chat.history.leaf()).contains(id)) {
             throw new IllegalStateException("Card is not in the active version");
         }
@@ -237,14 +238,13 @@ final class ChatStore {
         if (previous.card() == null || !previous.card().validState(key, value)) {
             throw new IllegalStateException("Invalid card state");
         }
-        if (value.equals(previous.cardState().get(key))) return;
+        if (value.equals(previous.cardState().get(key))) return LocalWrite.Change.NONE;
         Map<String, Object> state = new HashMap<>(previous.cardState());
         state.put(key, value);
-        chat.history.replace(id, new ChatHistory.Turn(previous.prompt(), previous.reply(), previous.model(),
+        ChatHistory.Turn updated = new ChatHistory.Turn(previous.prompt(), previous.reply(), previous.model(),
                 previous.card(), Map.copyOf(state), previous.replyState(), previous.searchQuery(), previous.image(),
-                previous.attachments(), previous.references(), previous.imageScope()));
-        try { save(); }
-        catch (RuntimeException error) { chat.history.replace(id, previous); throw error; }
+                previous.attachments(), previous.references(), previous.imageScope());
+        return change(() -> chat.history.replace(id, updated), () -> chat.history.replace(id, previous));
     }
 
     private void insertRecent(Chat chat) {
@@ -258,19 +258,39 @@ final class ChatStore {
         recent.add(position, chat);
     }
 
-    private void save() {
+    private LocalWrite.Change change(Runnable publish, Runnable undo) {
+        // Capture only immutable turn references on the UI thread. JSON and encryption run on disk.
+        publish.run();
+        try {
+            List<SavedChat> saved = snapshot();
+            String selected = activeId();
+            return new LocalWrite.Change(() -> write(saved, selected), publish);
+        } finally { undo.run(); }
+    }
+
+    private List<SavedChat> snapshot() {
+        var saved = new ArrayList<SavedChat>(recent.size());
+        for (Chat chat : recent) saved.add(new SavedChat(chat.id, chat.title, chat.updatedAt, chat.pinned,
+                chat.archived, chat.checkpoint, chat.history.snapshot()));
+        return saved;
+    }
+
+    private String activeId() { return active == null ? "" : active.id; }
+
+    private void write(List<SavedChat> snapshot, String selected) {
         JSONArray saved = new JSONArray();
         try {
-            for (Chat chat : recent) {
-                JSONObject row = new JSONObject().put("id", chat.id).put("title", chat.title)
-                        .put("updated", chat.updatedAt).put("pinned", chat.pinned)
-                        .put("turns", chat.history.write()).put("leaf", chat.history.leaf());
-                if (chat.archived) row.put("archived", true);
-                if (chat.checkpoint != null) row.put("checkpoint", new JSONObject().put("scope", chat.checkpoint.scope())
-                        .put("through", chat.checkpoint.through()).put("text", chat.checkpoint.text()));
+            for (SavedChat chat : snapshot) {
+                JSONObject row = new JSONObject().put("id", chat.id()).put("title", chat.title())
+                        .put("updated", chat.updatedAt()).put("pinned", chat.pinned())
+                        .put("turns", chat.history().write()).put("leaf", chat.history().leaf());
+                if (chat.archived()) row.put("archived", true);
+                var checkpoint = chat.checkpoint();
+                if (checkpoint != null) row.put("checkpoint", new JSONObject().put("scope", checkpoint.scope())
+                        .put("through", checkpoint.through()).put("text", checkpoint.text()));
                 saved.put(row);
             }
-            String json = new JSONObject().put("history", saved).put("active", active == null ? "" : active.id).toString();
+            String json = new JSONObject().put("history", saved).put("active", selected).toString();
             persist.accept(json);
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);

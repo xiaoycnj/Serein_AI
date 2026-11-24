@@ -28,6 +28,7 @@ final class ChatHistory {
                 ReplyState replyState, String searchQuery, GeneratedImage image,
                 List<ChatFile> attachments, List<ChatFile> references, String imageScope) {
         Turn {
+            cardState = Map.copyOf(cardState);
             attachments = List.copyOf(attachments);
             references = List.copyOf(references);
         }
@@ -60,6 +61,12 @@ final class ChatHistory {
         }
     }
     private record Node(int parent, Turn turn) {}
+
+    record Snapshot(List<Node> nodes, int leaf) {
+        JSONArray write() throws JSONException {
+            return writeNodes(nodes);
+        }
+    }
 
     private final List<Node> nodes = new ArrayList<>();
     private final Map<Integer, List<Integer>> children = new HashMap<>();
@@ -95,6 +102,12 @@ final class ChatHistory {
     }
 
     JSONArray write() throws JSONException {
+        return writeNodes(nodes);
+    }
+
+    Snapshot snapshot() { return new Snapshot(List.copyOf(nodes), leaf); }
+
+    private static JSONArray writeNodes(List<Node> nodes) throws JSONException {
         JSONArray saved = new JSONArray();
         for (Node node : nodes) {
             Turn turn = node.turn();

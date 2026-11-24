@@ -50,9 +50,20 @@ final class Vault {
         byte[] clear = value.getBytes(StandardCharsets.UTF_8);
         try {
             byte[] packed = seal(slot, clear);
-            SharedPreferences.Editor edit = prefs.edit().putString("vault_" + slot, Base64.encodeToString(packed, Base64.NO_WRAP));
-            for (String legacy : legacyFields) edit.remove(legacy);
-            if (!edit.commit()) throw new IllegalStateException("Vault write failed");
+            String field = "vault_" + slot;
+            synchronized (prefs) {
+                SharedPreferences.Editor undo = prefs.edit().putString(field, prefs.getString(field, null));
+                SharedPreferences.Editor edit = prefs.edit().putString(field, Base64.encodeToString(packed, Base64.NO_WRAP));
+                for (String legacy : legacyFields) {
+                    undo.putString(legacy, prefs.getString(legacy, null));
+                    edit.remove(legacy);
+                }
+                if (!edit.commit()) {
+                    // SharedPreferences updates its in-memory values even if the disk write fails.
+                    undo.commit();
+                    throw new IllegalStateException("Vault write failed");
+                }
+            }
         } catch (Exception error) {
             throw new IllegalStateException("无法保存加密数据", error);
         } finally {

@@ -69,10 +69,10 @@ final class ChatLocalContextCheck {
         var disk = new AtomicReference<>("{\"history\":[],\"active\":\"\"}");
         var store = new ChatStore(disk.get(), disk::set);
         store.append(-1, turn.prompt(), turn.reply(), turn.model(), null, null, turn.replyState(), null, null,
-                turn.attachments(), turn.references(), turn.imageScope());
+                turn.attachments(), turn.references(), turn.imageScope()).commit();
         var original = store.active;
-        store.fork(original, 0);
-        store.delete(original);
+        store.fork(original, 0).commit();
+        store.delete(original).commit();
         var restored = new ChatStore(disk.get(), disk::set);
         require(restored.active.history.turn(0).equals(turn), "a chat branch retains the shared attachment references on reload");
         var ids = new HashSet<String>();
