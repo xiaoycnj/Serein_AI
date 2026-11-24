@@ -14,8 +14,8 @@
 | 发送回归基线 | 已验收 | 用[独立测试包](../scripts/test-chat-regression.ps1)重放发送、断流、停止、重试与恢复 | Android 13、17 模拟器均通过：核对每台 8 个预期请求、取消时零请求、断流和重试保留版本与独立草稿、冷启动回读，无新增 Serein 崩溃或 ANR。在线服务商冒烟测试单独记录 |
 | 聊天界面 | 已验收 | 对齐消息与输入区，补齐等待、生成和保存提示，将断流原因与重试放在同一区域 | 对照 `1e8812c` 的截图，覆盖 Android 13 浅色与 Android 17 深色、320 dp 宽、1.45 倍字号、动画关闭；两台模拟器均重跑完整发送回归 |
 | 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab 和关闭后焦点恢复；另验证应用侧滑、实际启用的系统边缘返回及 TalkBack 焦点显示。Google Play TalkBack 逐项播报尚未验收 |
-| Alpha 0.0.26 源码轮 | 本轮验证，未签名发布 | 打开模型选择器后将初始键盘焦点交给搜索框；secure 模型面板仍做 UI 层级断言，不尝试截图 | Android 13、17 回归矩阵和长历史检查通过；`:app:chatChecks` 通过。当前轮没有可用的发行签名凭据，不据此生成签名发行版或宣称 Beta |
-| 下一轮 · Beta 候选 | 待办 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 对同一最终候选复核 1,200 轮历史、签名覆盖安装和数据保留；补齐 Google Play 版 TalkBack 逐项播报及剩余读屏路径。无已知阻断问题才进入候选。不把 Markdown 导出当作可恢复备份 |
+| Alpha 0.0.26 | 签名构建及覆盖升级通过，待发布 | 打开模型选择器后将初始键盘焦点交给搜索框；保留模型面板的系统截图保护 | Android 13、17 隔离回归矩阵及长历史检查通过；`:app:chatChecks` 通过。两台模拟器均从公开的 0.0.25 覆盖升级到同一份 0.0.26 签名 APK |
+| 下一轮 · Beta 候选 | 验收中 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 对同一最终候选复核 1,200 轮历史和导出；补齐 Google Play 版 TalkBack 逐项播报及剩余读屏路径。Markdown 文件仅用于阅读和归档 |
 
 ## 每轮交付规则
 
@@ -37,7 +37,13 @@
 - `:app:chatChecks` 通过全部 14 组检查；两个 PowerShell 回归脚本通过语法解析。构建日志有“Platform-Tools licence not accepted”警告，但目标任务最终为 `BUILD SUCCESSFUL`。这不是 SDK 安装或接受许可的验收。
 - 模型选择器搜索框现于打开时请求键盘焦点。API 33、37 层级断言已验证输入、筛选与关闭后焦点恢复；模型选择器标记为 secure，因此 `-CaptureUi` 不再对该面板调用系统截图，但不跳过交互断言。现有已签名 0.0.26 APK 早于此源码改动，不能作为本轮修改的安装包证据。
 - Google Play API 33 镜像预装 TalkBack 14.2.0.618048417，服务已绑定且触摸探索开启。已采集会话顶栏、侧栏入口与关闭、搜索项及模型面板的焦点显示截图。逐项语音播报、模型选择器 secure 窗口截图及最新源码上的完整读屏操作仍未验证；不以这些截图替代播报验收。
-- 当前进度仍是源码 Alpha，不是 Beta 候选：本机进程环境没有 `SEREIN_RELEASE_KEYSTORE` 或 `SEREIN_RELEASE_STORE_PASS`，且 Google Play TalkBack 逐项播报尚有缺口。推送源码不代表发布了新 APK。
+
+### 2026-11-25 · Alpha 0.0.26 签名构建与升级验收
+
+- 从 `79e0a46e7e18e67e1267d6e7d27a6239fb9d2a49` 运行 `./scripts/build-alpha.ps1 -Release -RunChatTests`。14 组检查通过，签名 APK 生成于 `outputs/release/Serein-Alpha-0.0.26.apk`。包名为 `app.serein.chat`，最低 API 为 33，版本名为 `0.0.26-alpha`，版本码为 26，大小为 11,751,609 字节。APK 的 SHA-256 为 `86f0bb7839e6c1376e1bd0797054cd4491a6889886cb1a33c496f30d20e585d6`，证书 SHA-256 为 `8b5084d9f82a15eb059adb277671b8ec8cfbb1897d0eeddbc40fba81a70a8894`，与 0.0.25 一致。
+- 将公开发行的 `Serein-Alpha-0.0.25.apk` 放入 `outputs/release/`，核对下方历史记录中的摘要，并运行 `./scripts/test-signed-upgrade.ps1 -Serial @('emulator-5584','emulator-5586') -Baseline ./outputs/release/Serein-Alpha-0.0.25.apk -Candidate ./outputs/release/Serein-Alpha-0.0.26.apk`。Android 13、17 均保留原安装标识、两轮聊天、服务商、模型和 Key 条目，新增离线回复在冷启动后仍可读，测试窗口内无新增 Serein 崩溃或 ANR。此路径覆盖 Key 条目的持久化，使用升级后的 Key 向服务商发请求仍待验证。
+- 在 Google Play API 33 模拟器安装相同摘要的签名 APK。TalkBack `14.2.0.618048417` 开启触摸探索，侧栏打开后截图记录到「关闭侧栏」按钮取得无障碍焦点；设备日志同时记录到 TalkBack 请求音频焦点和 TTS 合成。逐项标签、实际播报内容以及关闭侧栏或模型面板后的读屏焦点仍待完整核对。
+- 1,200 轮历史用例通过 `run-as` 为 `.chatqa` 注入合成记录。发行包需通过聊天流程生成测试历史，再复核翻页、搜索、重启和导出。0.0.26 发行资产等待候选验收。
 
 ## 历次改进
 
