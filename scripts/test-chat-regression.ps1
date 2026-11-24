@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 param(
     [Parameter(Mandatory)][ValidatePattern('^emulator-[0-9]+$')][string[]]$Serial,
-    [string]$SdkDir = $env:ANDROID_HOME
+    [string]$SdkDir = $env:ANDROID_HOME,
+    [switch]$CaptureUi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,6 +94,15 @@ function Start-App {
 
 function App-Process { ((Device shell pidof $package) -join '').Trim() }
 
+function Capture([string]$name) {
+    if (!$CaptureUi) { return }
+    $image = "/data/local/tmp/serein-$runId.png"
+    try {
+        Device shell screencap -p $image | Out-Null
+        Device pull $image (Join-Path $fixture "$name.png") | Out-Null
+    } finally { Device shell rm -f $image | Out-Null }
+}
+
 function Assert-Process([string]$expected) {
     if (!$expected -or (App-Process) -ne $expected) { throw "Chat QA process exited during the scenario (PID $expected)" }
 }
@@ -129,6 +139,14 @@ function Assert-Requests([string[]]$expected) {
 function Send([string]$prompt, [switch]$NewChat, [switch]$KeepKeyboard) {
     if ($NewChat) { Tap '新建聊天' }
     Type-Field '发消息' $prompt -KeepKeyboard:$KeepKeyboard
+    if ($KeepKeyboard -and $CaptureUi) {
+        Wait-For 'draft and send button with keyboard open' { param($ui)
+            (Find-Node $ui $prompt 'android.widget.EditText') -and
+                (Find-Node $ui '发送').enabled -eq 'true' -and
+                (Device shell dumpsys input_method | Select-String 'mInputShown=true' -Quiet)
+        } | Out-Null
+        Capture '01-composer'
+    }
     Tap '发送'
 }
 
@@ -156,9 +174,8 @@ function Configure-Provider([string]$base) {
     Type-Field '服务商名称' 'Local Fixture'
     Type-Field 'HTTPS 根地址（含 API 路径）' $base
     Tap '保存'
-    Tap '手动添加模型'
-    Type-Field '模型 ID' 'serein-fixture'
-    Tap '保存'
+    Tap '拉取模型列表'
+    Wait-For 'fixture model in provider settings' { param($ui) Find-Node $ui 'serein-fixture' } | Out-Null
     Tap '返回'
     Tap '返回'
     Tap '返回'
@@ -186,15 +203,25 @@ function Run-Scenarios([string]$base) {
     Tap '发送'
     Check-Delivery $base
     Tap '发送'
+    if ($CaptureUi) {
+        Wait-For 'waiting state before fixture sends its first delta' { param($ui)
+            (Find-Node $ui '停止生成') -and ($ui.SelectNodes("//node[@package='$package']") |
+                Where-Object { $_.text -like '等待*回复*' })
+        } | Out-Null
+        Capture '02-waiting'
+        $null = New-Item -ItemType File -Path (Join-Path $fixture 'First.resume')
+    }
     Wait-Reply 'First complete.'
     Send 'Followup'
     Wait-Reply 'Followup complete.'
+    Capture '03-transcript'
     Assert-Requests @('First', 'Followup')
     Assert-Process $initialProcess
     Write-Output 'PASS: cancellation kept the draft and sent nothing; approval and follow-up each sent once'
 
     Send 'Recover' -NewChat
     Wait-Reply 'Recover partial.' '回复未完成 · 已保留部分回复'
+    Capture '04-interrupted'
     Type-Field '发消息' 'Unrelated draft'
     Tap '重试回复'
     Wait-Reply 'Recover partial.' '回复未完成 · 已保留部分回复'
@@ -215,6 +242,7 @@ function Run-Scenarios([string]$base) {
     Wait-For 'partial text while stop is available' { param($ui)
         (Find-Node $ui '停止生成') -and (Find-Node $ui 'Stop partial.')
     } | Out-Null
+    Capture '05-streaming'
     Tap '停止生成'
     Wait-Reply 'Stop partial.' '已停止 · 已保留部分回复'
     $null = New-Item -ItemType File -Path (Join-Path $fixture 'Stop.resume')
@@ -271,7 +299,9 @@ try {
         $server = $null
         $installed = $false
         try {
-            $server = Start-Process -FilePath $nodeExe -ArgumentList @('"' + (Join-Path $PSScriptRoot 'qa/chat-fixture.cjs') + '"', '"' + $fixture + '"') `
+            $serverArgs = @('"' + (Join-Path $PSScriptRoot 'qa/chat-fixture.cjs') + '"', '"' + $fixture + '"')
+            if ($CaptureUi) { $serverArgs += 'capture' }
+            $server = Start-Process -FilePath $nodeExe -ArgumentList $serverArgs `
                 -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'server.stdout.log') `
                 -RedirectStandardError (Join-Path $fixture 'server.stderr.log')
             $portFile = Join-Path $fixture 'port.txt'

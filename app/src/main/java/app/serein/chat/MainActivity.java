@@ -103,6 +103,7 @@ public final class MainActivity extends Activity {
     private static final int MESSAGE_LIMIT = 4000;
     private static final int CREATE_EXPORT = 871;
     private static final String CHAT_SAVE_ERROR = "收到回复，但无法保存本机聊天记录。";
+    private static final String STOPPED_REPLY = "已停止生成";
     private static final String[] REASONING_MODES = {"none", "effort", "deepseek"};
     private static final ExecutorService DISK = Executors.newSingleThreadExecutor(task -> new Thread(task, "serein-disk"));
 
@@ -590,8 +591,8 @@ public final class MainActivity extends Activity {
 
         LinearLayout composer = row();
         composerAnchor = composer;
-        composer.setGravity(Gravity.CENTER_VERTICAL);
-        composer.setPadding(dp(3), dp(3), dp(4), dp(3));
+        composer.setGravity(Gravity.BOTTOM);
+        composer.setPaddingRelative(dp(4), dp(4), dp(4), dp(4));
         int fill = composerFill();
         int foreground = chatInk(fill);
         int surface = chatSurface(fill, foreground);
@@ -604,17 +605,18 @@ public final class MainActivity extends Activity {
         input.setHint("发消息");
         input.setTextColor(foreground);
         input.setHintTextColor(hint);
-        input.setTextSize(chatTextSize());
         input.setMinHeight(dp(48));
         input.setMaxLines(5);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        input.setTypeface(chatFont());
+        styleChatText(input);
         input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         input.setBackground(null);
-        input.setPadding(dp(4), dp(9), dp(6), dp(9));
+        input.setPaddingRelative(dp(3), dp(9), dp(8), dp(9));
         input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(MESSAGE_LIMIT)});
         input.setText(draft);
         input.setEnabled(composerEditable());
+        input.setOnFocusChangeListener((view, focused) -> composer.setBackground(shape(surface, composerRadius(),
+                focused ? Appearance.readable(accent, foreground, fill) : line)));
         composer.addView(input, new LinearLayout.LayoutParams(0, WRAP, 1));
 
         MaterialButton send = iconButton("发送", R.drawable.ic_send, onAccent, accent, () -> {
@@ -633,13 +635,14 @@ public final class MainActivity extends Activity {
             @Override public void afterTextChanged(Editable editable) {}
         });
         LinearLayout.LayoutParams composerLayout = new LinearLayout.LayoutParams(MATCH, WRAP);
-        composerLayout.setMargins(dp(16), dp(8), dp(16), dp(10));
+        int gutter = chatGutter();
+        composerLayout.setMargins(gutter, dp(6), gutter, dp(8));
         screen.addView(buildReasoning(choice), new LinearLayout.LayoutParams(MATCH, WRAP));
         var trayScroll = new HorizontalScrollView(this);
         trayScroll.setHorizontalScrollBarEnabled(false);
         trayScroll.setFillViewport(false);
         attachmentTray = row();
-        attachmentTray.setPadding(dp(16), 0, dp(16), 0);
+        attachmentTray.setPadding(gutter, 0, gutter, 0);
         trayScroll.addView(attachmentTray, new FrameLayout.LayoutParams(WRAP, WRAP));
         screen.addView(trayScroll, new LinearLayout.LayoutParams(MATCH, WRAP));
         screen.addView(composer, composerLayout);
@@ -654,12 +657,17 @@ public final class MainActivity extends Activity {
         String label = savingReply ? "正在保存" : sending ? "停止生成" : "发送";
         if (!label.contentEquals(button.getContentDescription())) {
             button.setIconResource(sending && !savingReply ? R.drawable.ic_stop : R.drawable.ic_send);
-            button.setIconTint(ColorStateList.valueOf(onAccent));
             button.setContentDescription(label);
             button.setTooltipText(label);
         }
-        button.setEnabled(ready);
-        button.setAlpha(ready ? 1f : .44f);
+        if (button.isEnabled() != ready) {
+            int fill = composerFill();
+            int foreground = chatInk(fill);
+            int idle = Appearance.blend(fill, foreground, .08f);
+            button.setBackgroundTintList(ColorStateList.valueOf(ready ? accent : idle));
+            button.setIconTint(ColorStateList.valueOf(ready ? onAccent : Appearance.readable(muted, foreground, idle)));
+            button.setEnabled(ready);
+        }
         if (attachmentButton != null) attachmentButton.setEnabled(!sending && pendingSave == null && !importingFile);
     }
 
@@ -930,7 +938,8 @@ public final class MainActivity extends Activity {
         }
 
         LinearLayout transcript = column();
-        transcript.setPadding(dp(18), dp(16), dp(18), dp(12));
+        int gutter = chatGutter();
+        transcript.setPadding(gutter, dp(12), gutter, dp(12));
         if (window.start() > 0) {
             addHistoryNavigation(transcript, "较早消息", () -> showHistoryWindow(path, window.older(), true));
         }
@@ -941,7 +950,7 @@ public final class MainActivity extends Activity {
                 int id = path.get(i);
                 ChatHistory.Turn turn = history.turn(id);
                 View question = userMessage(transcript, turn.prompt(), turn.attachments());
-                space(transcript, 15);
+                space(transcript, 12);
                 LinearLayout answer = column();
                 transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
                 turnAnchors.put(id, new TurnAnchors(question, answer));
@@ -959,12 +968,12 @@ public final class MainActivity extends Activity {
                     if (retryFailed) attempt = null;
                 }
                 messageActions(answer, id, markdown.hasArtifacts());
-                space(transcript, 8);
+                space(transcript, 16);
             }
         }
         if (showPending) {
             View question = userMessage(transcript, pendingPrompt, streamReply.attachments);
-            space(transcript, 15);
+            space(transcript, 12);
             LinearLayout answer = column();
             transcript.addView(answer, new LinearLayout.LayoutParams(MATCH, WRAP));
             liveReply = replyView(answer, streamReply.model, true);
@@ -972,12 +981,17 @@ public final class MainActivity extends Activity {
             liveReply.setVisibility(View.GONE);
         }
         if (latest && replyStatus != null && (showPending || attempt != null || retryReply == null)) {
-            TextView status = text(replyStatus, 14, muted, false);
-            status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-            status.setPadding(0, dp(6), 0, dp(8));
-            protectOnWallpaper(status);
-            transcript.addView(status);
-            liveStatus = status;
+            if (showPending) {
+                liveStatus = replyActivity();
+                transcript.addView(liveStatus);
+                refreshReplyActivity(streamReply);
+            } else {
+                LinearLayout recovery = replyNotice(transcript, replyStatus, !STOPPED_REPLY.equals(replyStatus), null);
+                if (attempt != null) {
+                    ReplyRetry retry = attempt;
+                    addRetryButton(recovery, retry.searchQuery() == null ? "重试" : "重试搜索", () -> resend(retry));
+                }
+            }
         }
         if (showPending) {
             liveActions = column();
@@ -985,9 +999,6 @@ public final class MainActivity extends Activity {
             liveMedia = column();
             liveActions.addView(liveMedia);
             renderToolMedia(streamReply, false);
-        } else if (latest && attempt != null) {
-            ReplyRetry retry = attempt;
-            addRetryButton(transcript, retry.searchQuery() == null ? "重试" : "重试搜索", () -> resend(retry));
         }
         if (!latest) addHistoryNavigation(transcript, "较新消息", () -> showHistoryWindow(path, window.newer(), false));
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
@@ -1118,22 +1129,23 @@ public final class MainActivity extends Activity {
     private ReplyText replyView(LinearLayout transcript, String model, boolean live) {
         LinearLayout byline = row();
         byline.setGravity(Gravity.CENTER_VERTICAL);
-        byline.addView(logo(28));
-        TextView name = text(model, 13, ink, true);
-        name.setPadding(dp(6), 0, 0, 0);
-        protectOnWallpaper(name);
-        byline.addView(name);
+        byline.addView(logo(22));
+        TextView name = text(model, 13, Appearance.readable(muted, ink, paper), true);
+        name.setPaddingRelative(dp(7), 0, 0, 0);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setAccessibilityHeading(true);
+        byline.addView(name, new LinearLayout.LayoutParams(0, WRAP, 1));
+        protectOnWallpaper(byline);
         transcript.addView(byline);
         ReplyText reply = new ReplyText(this);
         int foreground = chatInk(paper);
         reply.setTextColor(foreground);
-        reply.setTextSize(chatTextSize());
-        reply.setTypeface(chatFont());
+        styleChatText(reply);
         reply.setTextIsSelectable(!live);
         if (!live) reply.setMovementMethod(LinkMovementMethod.getInstance());
         reply.setLinkTextColor(Appearance.readable(accent, foreground, paper));
-        reply.setLineSpacing(dp(4), 1);
-        reply.setPadding(dp(8), dp(6), dp(8), dp(5));
+        reply.setPadding(0, dp(7), 0, dp(4));
         protectOnWallpaper(reply);
         transcript.addView(reply, new LinearLayout.LayoutParams(MATCH, WRAP));
         return reply;
@@ -1155,6 +1167,28 @@ public final class MainActivity extends Activity {
         if (visibleWallpaper()) content.setBackground(shape(paper, 8, 0));
     }
 
+    private TextView replyActivity() {
+        int foreground = Appearance.readable(muted, ink, paper);
+        TextView status = text("", 13, foreground, false);
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setPadding(0, dp(7), 0, dp(5));
+        var dot = shape(Appearance.readable(accent, foreground, paper), 3, 0);
+        dot.setBounds(0, 0, dp(6), dp(6));
+        status.setCompoundDrawablesRelative(dot, null, null, null);
+        status.setCompoundDrawablePadding(dp(7));
+        protectOnWallpaper(status);
+        return status;
+    }
+
+    private void refreshReplyActivity(StreamReply stream) {
+        if (liveStatus == null) return;
+        String label = stream.presented && !stream.searching && !stream.finishing ? "正在生成…" : replyStatus;
+        if (!TextUtils.equals(liveStatus.getText(), label)) liveStatus.setText(label);
+        boolean placeholder = stream.pendingImageSize != null && stream.image == null;
+        int visibility = !placeholder && label != null ? View.VISIBLE : View.GONE;
+        if (liveStatus.getVisibility() != visibility) liveStatus.setVisibility(visibility);
+    }
+
     private void showStream(StreamReply stream, String source, boolean allowOpening) {
         if (streamReply != stream || liveReply == null || source.isBlank() || source.equals(liveSource)) return;
         var content = markdown(source);
@@ -1163,7 +1197,7 @@ public final class MainActivity extends Activity {
         boolean animate = allowOpening && motionEnabled() && (!stream.presented || liveReply.hasOpening());
         stream.presented = true;
         liveSource = source;
-        if (liveStatus != null && !stream.searching && !stream.finishing) liveStatus.setVisibility(View.GONE);
+        refreshReplyActivity(stream);
         liveReply.setVisibility(View.VISIBLE);
         liveReply.update(content.text(), animate, dp(2));
     }
@@ -1238,14 +1272,13 @@ public final class MainActivity extends Activity {
         int fill = messageFill();
         int foreground = chatInk(fill);
         TextView user = text("", chatTextSize(), foreground, false);
-        user.setTypeface(chatFont());
+        styleChatText(user);
         user.setTextIsSelectable(true);
         user.setText(markdown(message, fill).text(), TextView.BufferType.SPANNABLE);
         user.setMovementMethod(LinkMovementMethod.getInstance());
         user.setLinkTextColor(Appearance.readable(accent, foreground, fill));
-        user.setLineSpacing(dp(4), 1);
-        user.setPadding(dp(14), dp(10), dp(14), dp(10));
-        user.setMaxWidth((int) (getResources().getDisplayMetrics().widthPixels * .76));
+        user.setPadding(dp(13), dp(8), dp(13), dp(8));
+        user.setMaxWidth(promptWidth());
         user.setBackground(shape(fill, messageRadius(), 0));
         LinearLayout.LayoutParams bubble = new LinearLayout.LayoutParams(WRAP, WRAP);
         bubble.gravity = Gravity.END;
@@ -1260,7 +1293,7 @@ public final class MainActivity extends Activity {
         transcript.addView(group, new LinearLayout.LayoutParams(MATCH, WRAP));
         for (ChatFile file : attached) {
             var button = action(file.name(), file.image() ? R.drawable.ic_image : R.drawable.ic_file, 0, ink, tint);
-            button.setMaxWidth(Math.min(dp(288), (int) (getResources().getDisplayMetrics().widthPixels * .76)));
+            button.setMaxWidth(Math.min(dp(288), promptWidth()));
             button.setSingleLine(true);
             button.setEllipsize(TextUtils.TruncateAt.END);
             button.setOnClickListener(v -> previewFile(file));
@@ -1665,7 +1698,7 @@ public final class MainActivity extends Activity {
             }
             if (message.equals("试试交互清单")) {
                 accepted.run();
-                startReply(message, "Serein", parent, fromComposer, "等待 Serein 回复…", stream ->
+                startReply(message, "Serein", parent, fromComposer, "等待回复…", stream ->
                         stream.card = ChatCard.parse("""
                                 {"title":"今天的安排","blocks":[{"id":"plan","type":"checklist","items":[
                                   {"label":"选出今天最重要的一件事"},{"label":"留一段不被打扰的时间"},{"label":"给临时事项留出余量"}
@@ -1675,7 +1708,7 @@ public final class MainActivity extends Activity {
             }
             if (message.equalsIgnoreCase("Markdown")) {
                 accepted.run();
-                startReply(message, "Serein", parent, fromComposer, "等待 Serein 回复…", stream -> {
+                startReply(message, "Serein", parent, fromComposer, "等待回复…", stream -> {
                     for (String part : new String[]{"# 阅读示例\n\n", "**重点**、*斜体*和~~删除线~~\n\n",
                             "> 这是一段引用。\n\n", "1. 列表项\n2. 行内代码 `val`\n\n",
                             "```kotlin\nval ready = true\n```\n\n", "| 格式 | 示例 |\n| --- | --- |\n| 链接 | [CommonMark](https://commonmark.org/) |"}) {
@@ -1783,7 +1816,7 @@ public final class MainActivity extends Activity {
         boolean preparing = compact && ChatContext.estimate(history, account, message) + reserved > ChatContext.threshold(inputLimit);
         String model = choice.model().title();
         String scope = chatScope(choice);
-        String waiting = "等待 " + model + " 回复…";
+        String waiting = "等待回复…";
         boolean supportsTools = entry == null || entry.supportsTools();
         var tools = new ChatTools.Options(supportsTools && web != null, supportsTools && image != null,
                 supportsTools && local.hasDocuments(), supportsTools && local.memory() && !memory.entries().isEmpty(),
@@ -1898,10 +1931,7 @@ public final class MainActivity extends Activity {
         ui.post(() -> {
             if (streamReply != stream || stream.finishing) return;
             replyStatus = status;
-            if (liveStatus != null) {
-                liveStatus.setText(status);
-                liveStatus.setVisibility(View.VISIBLE);
-            }
+            refreshReplyActivity(stream);
         });
     }
 
@@ -2027,7 +2057,7 @@ public final class MainActivity extends Activity {
         StreamReply stream = streamReply;
         if (stream == null || stream.finishing) return;
         cancelStream(stream);
-        finishReply(stream, ChatHistory.ReplyState.STOPPED, "已停止生成");
+        finishReply(stream, ChatHistory.ReplyState.STOPPED, STOPPED_REPLY);
     }
 
     private void cancelStream(StreamReply stream) {
@@ -2042,12 +2072,29 @@ public final class MainActivity extends Activity {
             case STOPPED -> "已停止 · 已保留部分回复";
             case INTERRUPTED -> "回复未完成 · 已保留部分回复";
         };
-        if (problem != null) label += "\n" + problem;
-        TextView marker = text(label, 13, muted, false);
-        marker.setPadding(dp(8), dp(4), dp(8), 0);
-        protectOnWallpaper(marker);
-        parent.addView(marker);
-        addRetryButton(parent, turn.searchQuery() == null ? "重试回复" : "重试搜索", () -> resendTurn(chat, id));
+        LinearLayout recovery = replyNotice(parent, label, turn.replyState() == ChatHistory.ReplyState.INTERRUPTED, problem);
+        addRetryButton(recovery, turn.searchQuery() == null ? "重试回复" : "重试搜索", () -> resendTurn(chat, id));
+    }
+
+    private LinearLayout replyNotice(LinearLayout parent, String label, boolean interrupted, String detail) {
+        int preferred = interrupted ? Appearance.readable(0xff973a27, 0xffffbeab, panel) : muted;
+        int fill = Appearance.blend(panel, preferred, interrupted ? .07f : .04f);
+        LinearLayout notice = column();
+        notice.setPadding(dp(10), dp(8), dp(10), dp(6));
+        notice.setBackground(shape(fill, 8, Appearance.blend(fill, preferred, .24f)));
+        var layout = new LinearLayout.LayoutParams(MATCH, WRAP);
+        layout.topMargin = dp(6);
+        layout.bottomMargin = dp(4);
+        parent.addView(notice, layout);
+        TextView status = text(label, 13, Appearance.readable(preferred, ink, fill), true);
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        notice.addView(status);
+        if (detail != null) {
+            TextView description = text(detail, 13, Appearance.readable(muted, ink, fill), false);
+            description.setPadding(0, dp(3), 0, dp(3));
+            notice.addView(description);
+        }
+        return notice;
     }
 
     private void addRetryButton(LinearLayout parent, String label, Runnable send) {
@@ -2107,10 +2154,7 @@ public final class MainActivity extends Activity {
             return;
         }
         replyStatus = "正在保存回复…";
-        if (liveStatus != null) {
-            liveStatus.setText(replyStatus);
-            liveStatus.setVisibility(View.VISIBLE);
-        }
+        refreshReplyActivity(stream);
         LocalWrite.Change turn;
         try {
             turn = store.append(stream.parent, message, reply, stream.model, stream.checkpoint, card, outcome,
@@ -4013,6 +4057,20 @@ public final class MainActivity extends Activity {
     private int surfaceOpacity() { return Appearance.clamp(prefs.getInt("surface_opacity", 90), 70, 100); }
     private int chatTextSize() { return Appearance.clamp(prefs.getInt("chat_text_size", 16), 12, 24); }
     private int messageRadius() { return Appearance.clamp(prefs.getInt("message_radius", 18), 0, 32); }
+
+    private void styleChatText(TextView body) {
+        body.setTextSize(chatTextSize());
+        body.setTypeface(chatFont());
+        body.setLineSpacing(dp(2), 1.12f);
+    }
+
+    private int chatGutter() {
+        return Math.max(dp(16), (getResources().getDisplayMetrics().widthPixels - dp(640)) / 2);
+    }
+
+    private int promptWidth() {
+        return (int) ((getResources().getDisplayMetrics().widthPixels - 2 * chatGutter()) * .84f);
+    }
 
     private int composerRadius() {
         int fallback = prefs.getString("material", "solid").equals("flat") ? 8 : 27;

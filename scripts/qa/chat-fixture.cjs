@@ -4,12 +4,24 @@ const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const folder = process.argv[2];
+const capture = process.argv[3] === 'capture';
 const cases = new Set(['First', 'Followup', 'Recover', 'Stop', 'Background', 'Dense']);
 const attempts = new Map();
 const log = (name) => appendFileSync(join(folder, 'requests.log'), `${name}\n`);
 
-function delta(response, content) {
-  response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`);
+function event(content) {
+  return `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`;
+}
+
+async function denseDelta(response) {
+  const body = event('**Strong** *emphasis* `literal` [link](https://example.com)\n\n'.repeat(18000));
+  // Keep one SSE event, but avoid handing the entire record to the emulator's TLS path in one write.
+  for (let offset = 0; offset < body.length && !response.destroyed; offset += 32768) {
+    await new Promise((resolve, reject) => {
+      response.write(body.slice(offset, offset + 32768), (error) => error ? reject(error) : resolve());
+    });
+    await delay(4);
+  }
 }
 
 async function waitForTest(name, response) {
@@ -21,8 +33,15 @@ async function waitForTest(name, response) {
 }
 
 async function reply(request, response) {
-  if (request.method !== 'POST' || request.url !== '/v1/chat/completions' ||
-      request.headers.authorization || request.headers['x-api-key']) {
+  if (request.headers.authorization || request.headers['x-api-key']) {
+    throw new Error('Unexpected fixture credentials');
+  }
+  if (request.method === 'GET' && request.url === '/v1/models') {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: 'serein-fixture' }] }));
+    return;
+  }
+  if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
     throw new Error('Unexpected fixture request');
   }
   let input = '';
@@ -47,9 +66,11 @@ async function reply(request, response) {
     return;
   }
 
+  if (name === 'First' && capture) await waitForTest(name, response);
+  if (response.destroyed) return;
   response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
-  delta(response, name === 'Dense' ? '**Strong** *emphasis* `literal` [link](https://example.com)\n\n'.repeat(18000)
-    : `${name} partial.\n\n`);
+  if (name === 'Dense') await denseDelta(response);
+  else response.write(event(`${name} partial.\n\n`));
   if (name === 'Recover' && attempt === 1) {
     response.end();
     return;
@@ -57,15 +78,19 @@ async function reply(request, response) {
   if (name === 'Stop' || name === 'Background') await waitForTest(name, response);
   else await delay(75);
   if (response.destroyed) return;
-  delta(response, `${name} complete.`);
+  response.write(event(`${name} complete.`));
   response.end('data: [DONE]\n\n');
 }
 
-createServer({ pfx: readFileSync(join(folder, 'fixture.p12')), passphrase: 'only-local-qa' }, (request, response) => {
-  reply(request, response).catch(() => {
+const server = createServer({ pfx: readFileSync(join(folder, 'fixture.p12')), passphrase: 'only-local-qa' }, (request, response) => {
+  response.setHeader('Connection', 'close');
+  reply(request, response).catch((error) => {
     log('INVALID');
+    console.error(error.message);
     response.destroy();
   });
-}).listen(0, '127.0.0.1', function () {
+});
+server.on('tlsClientError', (error) => console.error(`Fixture TLS: ${error.code ?? error.name}`));
+server.listen(0, '127.0.0.1', function () {
   writeFileSync(join(folder, 'port.txt'), String(this.address().port));
 });

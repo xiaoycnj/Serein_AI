@@ -4,6 +4,7 @@
         <item name="android:windowBackground">#F8FAF7</item>
         <item name="android:windowSplashScreenBackground">#F8FAF7</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/serein_launcher</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:colorAccent">@color/serein_primary</item>
         <item name="colorPrimary">@color/serein_primary</item>
         <item name="colorOnPrimary">@color/serein_on_primary</item>
