@@ -12,7 +12,8 @@
 | 热修 · 0.0.21 | 大段流式回复在首字动效期间短暂消失 | 限制模糊动效的绘制范围，完整保留回复 | Android 13 覆盖安装。验证 3,200 行回复、历史回访、Markdown 导出及生成中切换前后台 |
 | 3 · 外观 · 0.0.22 | 在小屏和键盘打开时找到合适模型 | 在同一行显示搜索、服务商设置与关闭，旋转时释放选择器窗口 | 检查浅色、深色、1.8 倍字号、窄屏、横屏、键盘和减少动效 |
 | 4 · 稳定 · 0.0.23 | 回复结束或切换模型时遇到慢写入 | 将会话和服务商配置的序列化、加密及写盘移到后台，成功后才更新本机记录 | Android 13、17 模拟器从 0.0.22 覆盖安装；Android 13 流式 3,200 行完整导出、写盘阻塞 9.78 秒时侧栏仍响应、旋转无重复、写入失败恢复草稿 |
-| 后续 · 长历史 | 回访累积了大量消息的会话，快速滚动和定位 | 测量长历史首次绘制与滚动，评估按需显示消息 | 验证完整导出、搜索跳转、分支、重试与附件仍然可用 |
+| 5 · 稳定 · 0.0.24 | 回访累积了大量消息的会话，快速滚动和定位 | 以 32 轮为窗口按需绘制，消息目录与历史搜索保持完整 | Android 13 用同一份加密的 1,200 轮 Markdown 测试记录，验证首尾定位、前后翻页和完整导出 |
+| 后续 · 长历史 | 渲染窗口已收窄，单条极长回复仍可产生卡顿 | 单独评估 Markdown 解析和文本排版耗时；先测再优化 | 用超长表格、代码和普通段落验证可读性、复制与导出 |
 
 ## 五款 Android 应用对照
 
@@ -28,6 +29,18 @@
 
 继续对照时优先检查真实任务，包括新聊天、结束或中断、切换服务商和回访历史。完整截图与第三方品牌资产留作本地研究参考。
 
+2026-11-24 复看上述商店截图，并用公开文档复核长会话的几个核心操作。商店截图不用于判断实现或性能。
+
+| 产品 | 回访历史的公开证据 | Serein 的实现取舍 |
+| --- | --- | --- |
+| ChatGPT for Android | [搜索帮助][gpt-search]注明可从侧栏按标题或消息找回会话 | 保留设在侧栏的本机搜索，打开时直接定位匹配消息 |
+| DeepSeek | [Chat Demo][deepseek-demo]保留消息分支，支持编辑、重新生成和历史导出。它是 Web 示例，不代表 Android 内部实现 | 窗口只读取当前分支，导出仍遍历整条分支 |
+| Claude by Anthropic | [Android 帮助][claude-manage]把重命名和删除放在会话操作中 | 保留现有会话菜单，独立于单条回复和消息窗口 |
+| Cherry Studio Mobile | [公开渲染设计][cherry-stream]将历史窗口和正在生成的消息分开 | 最新窗口显示流式回复，向前翻阅不变更模型请求；不引入 Agent Runtime |
+| Chatbox | [v1.24.4 更新记录][chatbox-log]记录改善历史加载、分支与重生成时的位置保留 | 验证目录定位和回到最新；已渲染窗口不改变回复版本 |
+
+Android 13 单次配对基准：用同一份已加密、含 1,200 轮合成 Markdown 的会话，从冷启动到自动化工具读到最新回复，0.0.23 为 58.45 秒，0.0.24 窗口候选版为 4.18 秒。时间包含 ADB 和 UI 采样，不代表真机加载时间；系统分别记录到 743 和 49 帧的跳帧事件。另用最终候选版导出并核对了全部 1,200 轮。
+
 [play-gpt]: https://play.google.com/store/apps/details?id=com.openai.chatgpt
 [play-deepseek]: https://play.google.com/store/apps/details?id=com.deepseek.chat
 [play-claude]: https://play.google.com/store/apps/details?id=com.anthropic.claude
@@ -36,12 +49,15 @@
 [gpt-mobile]: https://help.openai.com/en/articles/8142208-chatgpt-mobile-app-classic-experience
 [gpt-privacy]: https://help.openai.com/en/articles/7730893-data-controls-in-chatgpt
 [gpt-stream]: https://developers.openai.com/api/docs/guides/streaming-responses
+[gpt-search]: https://help.openai.com/en/articles/10056348-finding-your-chats-projects-and-files-in-chatgpt
 [deepseek-demo]: https://github.com/deepseek-ai/chat-demo/blob/main/README.zh-CN.md
 [deepseek-api]: https://api-docs.deepseek.com/api/create-chat-completion/
 [claude-privacy]: https://support.claude.com/en/articles/12260368-use-incognito-chats
 [claude-sse]: https://platform.claude.com/docs/en/build-with-claude/streaming
+[claude-manage]: https://support.claude.com/en/articles/8230524-delete-or-rename-a-conversation
 [cherry-app]: https://github.com/CherryHQ/cherry-studio-app
 [cherry-arch]: https://github.com/CherryHQ/cherry-studio-app/blob/main/docs/references/architecture-overview.md
+[cherry-stream]: https://github.com/CherryHQ/cherry-studio-app/blob/main/docs/references/chat/streaming-and-rendering.md
 [chatbox-log]: https://chatboxai.app/en/help-center/changelog
 [chatbox-arch]: https://github.com/chatboxai/chatbox/blob/main/docs/technical/ai-providers.md
 [chatbox-build]: https://github.com/chatboxai/chatbox/blob/main/package.json

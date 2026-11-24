@@ -182,6 +182,7 @@ public final class MainActivity extends Activity {
     private int historyQueryGeneration;
     private TranscriptScroll chatScroll;
     private final LinkedHashMap<Integer, TurnAnchors> turnAnchors = new LinkedHashMap<>();
+    private int historyStart = HistoryWindow.LATEST;
     private View directoryButton;
     private View latestButton;
     private EditText input;
@@ -575,7 +576,10 @@ public final class MainActivity extends Activity {
         chatScroll = new TranscriptScroll();
         chatScroll.setFillViewport(true);
         transcriptArea.addView(chatScroll, new FrameLayout.LayoutParams(MATCH, MATCH));
-        latestButton = iconButton("回到最新", R.drawable.ic_latest, ink, tint, () -> chatScroll.toLatest());
+        latestButton = iconButton("回到最新", R.drawable.ic_latest, ink, tint, () -> {
+            if (historyStart != HistoryWindow.LATEST) renderMessages();
+            else chatScroll.toLatest();
+        });
         latestButton.setVisibility(View.GONE);
         var latestPosition = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.BOTTOM | Gravity.END);
         latestPosition.setMarginEnd(dp(12));
@@ -871,11 +875,23 @@ public final class MainActivity extends Activity {
     }
 
     private void renderMessages() {
+        historyStart = HistoryWindow.LATEST;
         renderMessages(true);
+    }
+
+    private List<Integer> transcriptPath() {
+        if (store.active == null) return List.of();
+        ChatHistory history = store.active.history;
+        return history.path(streamReply == null ? history.leaf() : streamReply.parent);
     }
 
     private void renderMessages(boolean followLatest) {
         int previousY = chatScroll.getScrollY();
+        List<Integer> path = transcriptPath();
+        HistoryWindow window = HistoryWindow.at(path.size(), historyStart);
+        boolean latest = window.includesLatest();
+        historyStart = latest ? HistoryWindow.LATEST : window.start();
+        boolean showPending = latest && pendingPrompt != null;
         turnAnchors.clear();
         directoryButton.setVisibility(View.GONE);
         liveReply = null;
@@ -885,7 +901,7 @@ public final class MainActivity extends Activity {
         liveActions = null;
         liveMedia = null;
         liveSource = null;
-        chatScroll.restorePosition(followLatest, previousY);
+        chatScroll.restorePosition(latest && followLatest, previousY);
         chatScroll.removeAllViews();
         if (store.active == null && pendingPrompt == null && replyStatus == null) {
             LinearLayout welcome = column();
@@ -915,10 +931,14 @@ public final class MainActivity extends Activity {
 
         LinearLayout transcript = column();
         transcript.setPadding(dp(18), dp(16), dp(18), dp(12));
+        if (window.start() > 0) {
+            addHistoryNavigation(transcript, "较早消息", () -> showHistoryWindow(path, window.older(), true));
+        }
         ReplyRetry attempt = retryReply != null && retryReply.matches(store.active) ? retryReply : null;
         if (store.active != null) {
             ChatHistory history = store.active.history;
-            for (int id : history.path(streamReply == null ? history.leaf() : streamReply.parent)) {
+            for (int i = window.start(); i < window.end(); i++) {
+                int id = path.get(i);
                 ChatHistory.Turn turn = history.turn(id);
                 View question = userMessage(transcript, turn.prompt(), turn.attachments());
                 space(transcript, 15);
@@ -942,7 +962,7 @@ public final class MainActivity extends Activity {
                 space(transcript, 8);
             }
         }
-        if (pendingPrompt != null) {
+        if (showPending) {
             View question = userMessage(transcript, pendingPrompt, streamReply.attachments);
             space(transcript, 15);
             LinearLayout answer = column();
@@ -951,7 +971,7 @@ public final class MainActivity extends Activity {
             liveAnchors = new TurnAnchors(question, answer);
             liveReply.setVisibility(View.GONE);
         }
-        if (replyStatus != null && (pendingPrompt != null || attempt != null || retryReply == null)) {
+        if (latest && replyStatus != null && (showPending || attempt != null || retryReply == null)) {
             TextView status = text(replyStatus, 14, muted, false);
             status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             status.setPadding(0, dp(6), 0, dp(8));
@@ -959,19 +979,40 @@ public final class MainActivity extends Activity {
             transcript.addView(status);
             liveStatus = status;
         }
-        if (pendingPrompt != null) {
+        if (showPending) {
             liveActions = column();
             transcript.addView(liveActions);
             liveMedia = column();
             liveActions.addView(liveMedia);
             renderToolMedia(streamReply, false);
-        } else if (attempt != null) {
+        } else if (latest && attempt != null) {
             ReplyRetry retry = attempt;
             addRetryButton(transcript, retry.searchQuery() == null ? "重试" : "重试搜索", () -> resend(retry));
         }
+        if (!latest) addHistoryNavigation(transcript, "较新消息", () -> showHistoryWindow(path, window.newer(), false));
         chatScroll.addView(transcript, new ScrollView.LayoutParams(MATCH, WRAP));
         directoryButton.setVisibility(turnAnchors.isEmpty() ? View.GONE : View.VISIBLE);
+        chatScroll.updateLatest();
         if (streamReply != null) showStream(streamReply, streamReply.snapshot(), !streamReply.finishing);
+    }
+
+    private void addHistoryNavigation(LinearLayout transcript, String label, Runnable navigate) {
+        MaterialButton button = action(label, R.drawable.ic_list, 0, ink, tint);
+        button.setOnClickListener(v -> navigate.run());
+        var params = new LinearLayout.LayoutParams(WRAP, WRAP);
+        params.gravity = Gravity.CENTER_HORIZONTAL;
+        params.setMargins(0, dp(4), 0, dp(12));
+        transcript.addView(button, params);
+    }
+
+    private void showHistoryWindow(List<Integer> path, int start, boolean fromNewer) {
+        var window = HistoryWindow.at(path.size(), start);
+        if (window.start() == window.end()) return;
+        int id = path.get(fromNewer ? window.end() - 1 : window.start());
+        historyStart = start;
+        renderMessages(false);
+        TurnAnchors anchors = turnAnchors.get(id);
+        if (anchors != null) chatScroll.toAnchor(fromNewer ? anchors.answer() : anchors.prompt());
     }
 
     private void addGeneratedImage(LinearLayout parent, GeneratedImage image) {
@@ -1186,7 +1227,8 @@ public final class MainActivity extends Activity {
 
         private void updateLatest() {
             if (this == chatScroll && latestButton != null) {
-                int visibility = !following && canScrollVertically(1) ? View.VISIBLE : View.GONE;
+                int visibility = historyStart != HistoryWindow.LATEST || !following && canScrollVertically(1)
+                        ? View.VISIBLE : View.GONE;
                 if (latestButton.getVisibility() != visibility) latestButton.setVisibility(visibility);
             }
         }
@@ -1301,10 +1343,12 @@ public final class MainActivity extends Activity {
 
     private void showMessageDirectory() {
         ChatStore.Chat chat = store.active;
-        if (chat == null || turnAnchors.isEmpty()) return;
+        if (chat == null) return;
+        List<Integer> path = transcriptPath();
+        if (path.isEmpty()) return;
         List<MenuItem> items = new ArrayList<>();
         int number = 1;
-        for (int id : turnAnchors.keySet()) {
+        for (int id : path) {
             String label = number++ + " · " + preview(chat.history.turn(id).promptLabel(), 82);
             items.add(new MenuItem(label, () -> jumpTo(chat, id, false)));
         }
@@ -1314,6 +1358,14 @@ public final class MainActivity extends Activity {
     private void jumpTo(ChatStore.Chat chat, int id, boolean answer) {
         if (store.active != chat || chatScroll == null) return;
         TurnAnchors anchors = turnAnchors.get(id);
+        if (anchors == null) {
+            List<Integer> path = transcriptPath();
+            int index = path.indexOf(id);
+            if (index < 0) return;
+            historyStart = HistoryWindow.around(path.size(), index);
+            renderMessages(false);
+            anchors = turnAnchors.get(id);
+        }
         if (anchors != null) chatScroll.toAnchor(answer ? anchors.answer() : anchors.prompt());
     }
 
