@@ -2990,7 +2990,6 @@ public final class MainActivity extends Activity {
         dialog.supportRequestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout sheet = column();
         sheet.setPadding(dp(12), dp(8), dp(12), dp(8));
-        sheet.setFocusableInTouchMode(true);
         sheet.setAccessibilityPaneTitle("选择模型");
         sheet.setBackground(UiKit.sheetSurface(controls, panel, line));
 
@@ -3082,7 +3081,7 @@ public final class MainActivity extends Activity {
             list.setSelection(0);
         });
         dialog.setContentView(sheet);
-        sheet.requestFocus();
+        search.requestFocus();
         dialog.setCanceledOnTouchOutside(true);
         Window window = dialog.getWindow();
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));

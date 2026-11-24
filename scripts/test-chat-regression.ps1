@@ -3,10 +3,13 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^emulator-[0-9]+$')][string[]]$Serial,
     [string]$SdkDir = $env:ANDROID_HOME,
     [switch]$CaptureUi,
-    [switch]$Navigation
+    [switch]$Navigation,
+    [switch]$LongHistory,
+    [switch]$RequireEdgeBack
 )
 
 $ErrorActionPreference = 'Stop'
+if ($RequireEdgeBack -and !$Navigation) { throw '-RequireEdgeBack requires -Navigation' }
 $project = Split-Path -Parent $PSScriptRoot
 if (!$SdkDir) { $SdkDir = $env:ANDROID_SDK_ROOT }
 if (!$SdkDir) { $SdkDir = Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
@@ -27,7 +30,15 @@ $null = New-Item -ItemType Directory -Path (Join-Path $resources 'raw') -Force
 
 function Device {
     $result = & $adb -s $deviceSerial @args
-    if ($LASTEXITCODE -ne 0) { throw "ADB failed on $deviceSerial ($($args[0]))" }
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        $operation = $args[0]
+        if ($operation -eq 'shell') {
+            $operation += " $($args[1])"
+            if ($args[1] -in 'input', 'am', 'wm', 'pm', 'settings', 'cmd') { $operation += " $($args[2])" }
+        }
+        throw "ADB failed on $deviceSerial ($operation, exit $exitCode)"
+    }
     $result
 }
 
@@ -81,6 +92,10 @@ function Tap([string]$label, [string]$class = '') {
 
 function Back { Device shell input keyevent KEYCODE_BACK | Out-Null }
 
+function Is-KeyboardShown {
+    Device shell dumpsys input_method | Select-String 'mInputShown=true' -Quiet
+}
+
 function Type-Field([string]$label, [string]$value, [switch]$KeepKeyboard) {
     Tap $label 'android.widget.EditText'
     Device shell input text ($value -replace ' ', '%s') | Out-Null
@@ -97,6 +112,10 @@ function App-Process { ((Device shell pidof $package) -join '').Trim() }
 
 function Capture([string]$name) {
     if (!$CaptureUi) { return }
+    if ($name -in '08-model-picker-ime', '10-landscape-picker') {
+        Write-Output "SKIP screenshot for secure model picker ($name); UI hierarchy assertions remain enabled"
+        return
+    }
     $image = "/data/local/tmp/serein-$runId.png"
     try {
         Device shell screencap -p $image | Out-Null
@@ -216,23 +235,43 @@ function Check-Navigation {
     } | Out-Null
 
     Tap $model
-    Type-Field '搜索模型' 'serein-fixture' -KeepKeyboard
+    $search = Wait-For 'model search without automatically opening the keyboard' { param($ui)
+        if (!(Is-KeyboardShown)) { Find-Node $ui '搜索模型' 'android.widget.EditText' }
+    }
+    Tap-Node $search 'model search field'
+    $imeTimer = [Diagnostics.Stopwatch]::StartNew()
+    while (!(Is-KeyboardShown)) {
+        if ($imeTimer.Elapsed.TotalSeconds -ge 10) { throw "Model search did not open the keyboard on $deviceSerial" }
+        Start-Sleep -Milliseconds 150
+    }
+    Device shell input text serein-fixture | Out-Null
     Wait-For 'filtered model visible with picker keyboard' { param($ui)
-        (Find-Node $ui 'serein-fixture') -and !(Find-Node $ui '离线演示') -and (Find-Node $ui '关闭模型选择')
+        (Find-Node $ui 'serein-fixture' 'android.widget.EditText').focused -eq 'true' -and
+            (Find-Node $ui 'Local Fixture') -and !(Find-Node $ui '离线演示') -and (Is-KeyboardShown)
     } | Out-Null
     Capture '08-model-picker-ime'
     Back
+    Wait-For 'picker still open after keyboard dismissal' { param($ui)
+        (Find-Node $ui '关闭模型选择') -and !(Is-KeyboardShown)
+    } | Out-Null
     Device shell input keyevent KEYCODE_TAB | Out-Null
     Back
     Wait-For 'picker focus restored' { param($ui) (Find-Node $ui $model).focused -eq 'true' } | Out-Null
     Write-Output 'PASS: model form saved with IME, keyboard focus stayed in drawer, and both overlays restored focus'
 
     if ((Device shell settings get secure navigation_mode) -eq '2') {
+        $systemUi = (Device shell dumpsys activity service com.android.systemui/.SystemUIService) -join "`n"
+        $backHandlers = [regex]::Matches($systemUi, '(?m)^([ \t]*)EdgeBackGestureHandler:[ \t]*\n((?:\1[ \t]+[^\n]*\n)*)')
+        $hasBackEdge = @($backHandlers | Where-Object {
+            $state = $_.Groups[2].Value
+            $state -match '(?m)^\s*mIsEnabled=true\s*$' -and
+                $state -match '(?m)^\s*mIsBackGestureAllowed=true\s*$' -and
+                $state -match '(?m)^\s*mEdgeWidthLeft=[1-9][0-9]*\s*$'
+        }).Count -gt 0
+        if ($RequireEdgeBack -and !$hasBackEdge) { throw "No active SystemUI left Back edge on $deviceSerial" }
         $scale = [int]((Device shell wm density | Select-Object -Last 1) -replace '^.*: ', '') / 160.0
         Device shell input swipe ([int](60 * $scale)) ([int](160 * $scale)) ([int](190 * $scale)) ([int](160 * $scale)) 260 | Out-Null
         Wait-For 'drawer opened from inside the system back edge' { param($ui) Find-Node $ui '关闭侧栏' 'android.widget.Button' } | Out-Null
-        $hasBackEdge = Device shell dumpsys activity service com.android.systemui/.SystemUIService |
-            Select-String 'mEdgeWidthLeft=[1-9][0-9]*' -Quiet
         if ($hasBackEdge) {
             Device shell input swipe 4 ([int](160 * $scale)) ([int](125 * $scale)) ([int](160 * $scale)) 280 | Out-Null
         } else { Back }
@@ -241,7 +280,7 @@ function Check-Navigation {
         } | Out-Null
         if ($hasBackEdge) { Write-Output 'PASS: in-app drawer swipe and system edge Back both worked' }
         else { Write-Output 'PASS: in-app drawer swipe and Back key; native edge Back unavailable in this emulator' }
-    }
+    } elseif ($RequireEdgeBack) { throw "System gesture navigation is required on $deviceSerial" }
 
     $rotation = ((Device shell cmd window user-rotation) -join '').Trim()
     if ($rotation -notmatch '^(free|lock [0-3])$') { throw "Unexpected rotation setting: $rotation" }
@@ -356,6 +395,118 @@ function Run-Scenarios([string]$base) {
     Write-Output 'PASS: 18,000 dense Markdown blocks remained actionable and readable after a cold restart'
 }
 
+function Run-LongHistory {
+    $turns = @(for ($i = 1; $i -le 1200; $i++) {
+        @{parent=($i - 2); model='History QA'; prompt=('HistoryStepline {0:D4}' -f $i);
+          reply="## Fixture $i`n`nThis is **synthetic**, with _emphasis_ and a [link](https://example.com).`n`n1. History body $i`n2. AnchorMarker$i`n`n| State | Value |`n| --- | --- |`n| Fixture | $i |"}
+    })
+    $history = ConvertTo-Json -InputObject @(@{id='history-qa';title='History QA 1200';updated=1795496400000;
+            turns=$turns;leaf=1199}) -Depth 6 -Compress
+    $inputFile = Join-Path $fixture 'legacy-history.xml'
+    $writer = [Xml.XmlWriter]::Create($inputFile)
+    try {
+        $writer.WriteStartDocument()
+        $writer.WriteStartElement('map')
+        foreach ($entry in @{history=$history;active_chat='history-qa'}.GetEnumerator()) {
+            $writer.WriteStartElement('string')
+            $writer.WriteAttributeString('name', $entry.Key)
+            $writer.WriteString($entry.Value)
+            $writer.WriteEndElement()
+        }
+        $writer.WriteEndElement()
+    } finally { $writer.Dispose() }
+
+    $remotePrefs = "/data/local/tmp/serein-$runId-history.xml"
+    Device shell am force-stop $package | Out-Null
+    if ((Device shell pm clear $package) -notcontains 'Success') { throw 'Could not reset the isolated history fixture' }
+    Device push $inputFile $remotePrefs | Out-Null
+    try {
+        Device shell run-as $package mkdir -p shared_prefs | Out-Null
+        Device shell run-as $package cp $remotePrefs shared_prefs/serein.xml | Out-Null
+    } finally { Device shell rm -f $remotePrefs | Out-Null }
+
+    Start-App
+    Wait-Reply 'AnchorMarker1200'
+    $originalProcess = App-Process
+    $prefsText = (Device exec-out run-as $package cat shared_prefs/serein.xml) -join "`n"
+    $prefs = [xml]$prefsText
+    $sealed = $prefs.SelectSingleNode('//string[@name="vault_chat"]')
+    if (!$sealed -or $prefs.SelectSingleNode('//string[@name="history" or @name="active_chat"]') -or
+        $prefsText.Contains('AnchorMarker1200') -or ([Convert]::FromBase64String($sealed.InnerText))[0] -ne 1) {
+        throw 'Legacy synthetic history did not migrate into the encrypted record'
+    }
+    Tap '消息目录'
+    Tap '1 · HistoryStepline 0001'
+    Wait-For 'oldest visible turn' { param($ui) Find-Node $ui 'HistoryStepline 0001' } | Out-Null
+    Capture '11-history-oldest'
+    Tap '回到最新'
+    Wait-Reply 'AnchorMarker1200'
+
+    Tap '会话'
+    Tap '搜索会话'
+    Device shell input text AnchorMarker1170 | Out-Null
+    Back
+    Tap 'History QA 1200'
+    Wait-Reply 'AnchorMarker1170'
+    $older = $null
+    for ($i = 0; $i -lt 6 -and !$older; $i++) {
+        $ui = Screen
+        $older = Find-Node $ui '较早消息'
+        if (!$older) {
+            $scroll = $ui.SelectSingleNode("//node[@package='$package' and @scrollable='true']")
+            if (!$scroll -or $scroll.bounds -notmatch '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { throw 'No transcript to scroll' }
+            $x = ([int]$Matches[1] + [int]$Matches[3]) -shr 1
+            $y = [int]$Matches[2]
+            $height = [int]$Matches[4] - $y
+            Device shell input swipe $x ([int]($y + $height * .14)) $x ([int]($y + $height * .85)) 310 | Out-Null
+        }
+    }
+    Tap-Node $older 'older history window'
+    Tap '较新消息'
+    Tap '回到最新'
+    Wait-Reply 'AnchorMarker1200'
+    Assert-Process $originalProcess
+    Reopen
+    Wait-Reply 'AnchorMarker1200'
+    Write-Output 'PASS: 1,200 encrypted turns support oldest/latest navigation, search, paging and cold reload'
+
+    Tap '会话'
+    Tap '会话选项 · History QA 1200'
+    Tap '导出 Markdown'
+    Tap '选择保存位置'
+    $nameField = Wait-For 'system file name field' { param($ui)
+        $ui.SelectSingleNode('//node[@class="android.widget.EditText" and contains(@package,"documentsui")]')
+    }
+    Tap-Node $nameField 'system file name'
+    Device shell input keyevent KEYCODE_MOVE_END | Out-Null
+    for ($j = 0; $j -lt $nameField.text.Length; $j++) { Device shell input keyevent KEYCODE_DEL | Out-Null }
+    $name = "history-$runId.md"
+    Device shell input text $name | Out-Null
+    Back
+    $save = Wait-For 'system Save command' { param($ui)
+        $ui.SelectNodes('//node[contains(@package,"documentsui")]') | Where-Object {
+            $_.text -in 'SAVE','Save','保存' -or $_.'resource-id' -like '*:id/action_menu_save'
+        } | Select-Object -Last 1
+    }
+    Tap-Node $save 'system Save'
+    $remote = "/sdcard/Download/$name"
+    $local = Join-Path $fixture $name
+    try {
+        $receipt = Wait-For 'export file saved' { param($ui) Find-Node $ui '文件已保存' }
+        Device pull $remote $local | Out-Null
+        $raw = [IO.File]::ReadAllText($local)
+        $markers = [regex]::Matches($raw, '\bAnchorMarker([0-9]+)\b')
+        $prompts = [regex]::Matches($raw, '\bHistoryStepline ([0-9]{4})\b')
+        if ($markers.Count -ne 1200 -or $prompts.Count -ne 1200) { throw 'Export omitted or repeated a turn' }
+        for ($i = 0; $i -lt 1200; $i++) {
+            if ([int]$markers[$i].Groups[1].Value -ne $i + 1 -or [int]$prompts[$i].Groups[1].Value -ne $i + 1) {
+                throw "Export order differs at turn $($i + 1)"
+            }
+        }
+        Write-Output "PASS: export contains all 1,200 prompts and replies once, in order ($((Get-Item $local).Length) bytes)"
+    } finally { Device shell rm -f $remote | Out-Null }
+}
+
 try {
     & $keytool -genkeypair -alias fixture -keyalg RSA -keysize 2048 -sigalg SHA256withRSA -validity 2 `
         -dname 'CN=Serein Chat QA' -ext 'SAN=IP:10.0.2.2' -storetype PKCS12 -keystore $pfx -storepass only-local-qa
@@ -395,6 +546,7 @@ try {
             Device install $apk
             $installed = $true
             Run-Scenarios "https://10.0.2.2:$port/v1"
+            if ($LongHistory) { Run-LongHistory }
             $newFaults = @(App-Faults | Where-Object { $_ -notin $beforeFaults })
             if ($newFaults.Count) { throw "New crash or ANR for $package on $deviceSerial" }
             Write-Output "PASS: exact request sequence and no new app crash or ANR on $deviceSerial"

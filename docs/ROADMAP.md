@@ -13,8 +13,9 @@
 | 0.0.25 · 发送稳定性 | 签名预发行版已发布 | 密集 Markdown 回复用纯文本预览，历史、复制和导出保留原文 | Android 13 重放已复现卡死的 18,000 段回复，确认无新增应用崩溃或 ANR，能操作、冷启动回读和完整导出；Android 17 用在线测试服务商连续发送并验证恢复 |
 | 发送回归基线 | 已验收 | 用[独立测试包](../scripts/test-chat-regression.ps1)重放发送、断流、停止、重试与恢复 | Android 13、17 模拟器均通过：核对每台 8 个预期请求、取消时零请求、断流和重试保留版本与独立草稿、冷启动回读，无新增 Serein 崩溃或 ANR。在线服务商冒烟测试单独记录 |
 | 聊天界面 | 已验收 | 对齐消息与输入区，补齐等待、生成和保存提示，将断流原因与重试放在同一区域 | 对照 `1e8812c` 的截图，覆盖 Android 13 浅色与 Android 17 深色、320 dp 宽、1.45 倍字号、动画关闭；两台模拟器均重跑完整发送回归 |
-| 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab 和关闭后焦点恢复；另验证应用侧滑、返回键及 TalkBack FOSS 的焦点进入/返回 |
-| 下一轮 · Beta 候选 | 待办 | 汇总稳定性、长历史和覆盖升级证据，补齐导航与读屏覆盖，评估是否达到候选版门槛 | Android 13 及较新 Android 回归矩阵通过，复核 1,200 轮历史、签名覆盖安装和数据保留；补测设备实际启用的系统边缘返回，以及 Google Play 版 TalkBack 的逐项播报。无已知阻断问题才进入候选。不把 Markdown 导出当作可恢复备份 |
+| 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab 和关闭后焦点恢复；另验证应用侧滑、实际启用的系统边缘返回及 TalkBack 焦点显示。Google Play TalkBack 逐项播报尚未验收 |
+| Alpha 0.0.26 源码轮 | 本轮验证，未签名发布 | 打开模型选择器后将初始键盘焦点交给搜索框；secure 模型面板仍做 UI 层级断言，不尝试截图 | Android 13、17 回归矩阵和长历史检查通过；`:app:chatChecks` 通过。当前轮没有可用的发行签名凭据，不据此生成签名发行版或宣称 Beta |
+| 下一轮 · Beta 候选 | 待办 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 对同一最终候选复核 1,200 轮历史、签名覆盖安装和数据保留；补齐 Google Play 版 TalkBack 逐项播报及剩余读屏路径。无已知阻断问题才进入候选。不把 Markdown 导出当作可恢复备份 |
 
 ## 每轮交付规则
 
@@ -26,7 +27,17 @@
 
 聊天界面轮参考 [Apple HIG 的排版层级](https://developer.apple.com/design/human-interface-guidelines/typography)和 [Android Views 无障碍指南](https://developer.android.com/guide/topics/ui/accessibility/views/apps-views)，保留原有字体、主题偏好和 48 dp 图标触控区。对照截图用合成回复采集，保存在本地 `outputs/chat-regression/`；长模型名顶栏省略和模型配置表单不在本轮改动范围内。
 
-导航轮使用 `test-chat-regression.ps1 -Navigation -CaptureUi` 验证。Android 17 的深色测试宽度为 320 dp，系统字号 1.8 倍；横屏实测可滚动侧栏并打开设置。Android 13 启用手势模式后，SystemUI 的原生边缘返回处理器仍不可用，因此结果只覆盖应用侧滑和返回键。另在 Android 17 的隔离包使用 [TalkBack FOSS 13.0-f02](https://github.com/talkback-foss-team/talkback-foss/releases/tag/v13.0.0.473912301-f02) 确认侧栏开启时、关闭侧栏和关闭模型选择器后的读屏焦点，没有把它当成 Google Play 版逐项朗读验收。测试后卸载读屏和隔离包，恢复模拟器设置。
+导航轮使用 `test-chat-regression.ps1 -Navigation -CaptureUi` 验证。Android 17 的深色测试宽度为 320 dp，系统字号 1.8 倍；横屏实测可滚动侧栏并打开设置。旧轮 Android 13 的边缘返回检查未生效；2026-11-24 在 API 33 和 API 37 启用手势模式、确认 SystemUI Back handler 启用后，重新通过真实左边缘返回和应用侧滑。另在 Android 17 的隔离包使用 [TalkBack FOSS 13.0-f02](https://github.com/talkback-foss-team/talkback-foss/releases/tag/v13.0.0.473912301-f02) 确认侧栏开启时、关闭侧栏和关闭模型选择器后的读屏焦点，没有把它当成 Google Play 版逐项朗读验收。测试后卸载读屏和隔离包，恢复模拟器设置。
+
+### 2026-11-24 · Alpha 0.0.26 源码验收
+
+- 回归命令：`./scripts/test-chat-regression.ps1 -Serial @('emulator-5584','emulator-5586') -Navigation -RequireEdgeBack -LongHistory`。收据位于 `outputs/chat-regression/f90a4aaa0965451e940c8fabf2fb8167/`；Android 13（API 33）和 Android 17（API 37）均完成。每台设备的精确请求序列为 8 个；发送、取消、断流、停止、重试、版本与草稿保存、冷启动恢复均通过，未观察到新增 Serein 崩溃或 ANR。
+- 两台设备均将系统导航设为手势模式，并检查 SystemUI Back 手势处理器处于启用且允许状态；真实左边缘返回和应用侧滑均通过。1,200 轮合成长历史完成旧格式到加密格式迁移、首尾定位、搜索、分页、冷启动回读；Markdown 导出逐条包含 1,200 个提问和回复，顺序一致，文件为 272,790 字节。
+- 截图导航复测命令：`./scripts/test-chat-regression.ps1 -Serial @('emulator-5584','emulator-5586') -Navigation -RequireEdgeBack -CaptureUi`。收据位于 `outputs/chat-regression/034e8b2c42d84c40a13539870db9b8a2/`；两台设备均各保存 8 张非 secure 页面截图、发出 8 个预期请求且未新增崩溃或 ANR。模型选择器截图因窗口启用 secure 标记而跳过，搜索、IME、筛选、返回焦点和横屏层级断言照常运行。
+- `:app:chatChecks` 通过全部 14 组检查；两个 PowerShell 回归脚本通过语法解析。构建日志有“Platform-Tools licence not accepted”警告，但目标任务最终为 `BUILD SUCCESSFUL`。这不是 SDK 安装或接受许可的验收。
+- 模型选择器搜索框现于打开时请求键盘焦点。API 33、37 层级断言已验证输入、筛选与关闭后焦点恢复；模型选择器标记为 secure，因此 `-CaptureUi` 不再对该面板调用系统截图，但不跳过交互断言。现有已签名 0.0.26 APK 早于此源码改动，不能作为本轮修改的安装包证据。
+- Google Play API 33 镜像预装 TalkBack 14.2.0.618048417，服务已绑定且触摸探索开启。已采集会话顶栏、侧栏入口与关闭、搜索项及模型面板的焦点显示截图。逐项语音播报、模型选择器 secure 窗口截图及最新源码上的完整读屏操作仍未验证；不以这些截图替代播报验收。
+- 当前进度仍是源码 Alpha，不是 Beta 候选：本机进程环境没有 `SEREIN_RELEASE_KEYSTORE` 或 `SEREIN_RELEASE_STORE_PASS`，且 Google Play TalkBack 逐项播报尚有缺口。推送源码不代表发布了新 APK。
 
 ## 历次改进
 
