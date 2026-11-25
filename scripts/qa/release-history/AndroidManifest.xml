@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="app.serein.historyqa">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
+    <application android:label="Serein Release History QA" />
+    <instrumentation android:name=".ReleaseHistory"
+        android:targetPackage="app.serein.historyqa" />
+</manifest>

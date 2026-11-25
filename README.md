@@ -114,6 +114,14 @@ adb install -r .\outputs\Serein-Alpha-0.0.25.apk
 
 发行打包使用 `./scripts/build-alpha.ps1 -RunChatTests -Release`，输出到 `outputs/release/`。构建需要仓库外的签名库（别名 `serein-release`）；通过 `SEREIN_RELEASE_KEYSTORE` 和 `SEREIN_RELEASE_STORE_PASS` 提供路径和密码。
 
+在未安装 Serein、未开启无障碍服务的专用 `SereinBeta33` 或 `SereinBeta37` 模拟器上，可用 PowerShell 7.3+ 验证签名发行包的长会话：
+
+```powershell
+.\scripts\test-release-history.ps1 -Serial emulator-5584 -Candidate .\outputs\release\Serein-Alpha-0.0.26.apk
+```
+
+脚本核对设备上的 APK 摘要，通过独立的 UI 测试助手发送 1,200 轮离线消息，不访问应用私有数据。它会检查消息目录、会话搜索、分页、冷启动和 Markdown 导出的完整顺序，然后卸载本轮测试安装。日志和合成导出留在 `outputs/release-history/`。可加 `-Turns 65` 快速冒烟；旧格式迁移和密集 Markdown 仍由隔离包回归覆盖。
+
 在离线演示模型发送 `Markdown` 可查看流式富文本示例，无需配置 Key。可在正文出现后点停止，重开会话确认部分回复和停止标记仍在。聊天排版和交互参考 [Material Design 3](https://m3.material.io/styles/typography/overview) 和 [Apple HIG Motion](https://developer.apple.com/design/human-interface-guidelines/motion)。
 
 流式处理对照了 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion) 和 [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)。帧刷新和渐入参考了 [AstraAgent 的会话渲染](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/js/conversation.js) 与 [动效样式](https://github.com/xiaoycnj/AstraAgent/blob/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f/web/assets/css/ui/chat-motion.css)。消息版本和滚动跟随参考了 [DeepSeek Chat Demo](https://github.com/deepseek-ai/chat-demo/tree/8ad7b56e196b87d8a3215dc09476d6d146ad3f0e)，分段摘要和本地模型路由参考了 [AstraAgent](https://github.com/xiaoycnj/AstraAgent/tree/1a9d7d5d88fa36f993bbd2cc8e2a3dd2a6c7449f)。
