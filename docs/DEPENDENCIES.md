@@ -4,7 +4,9 @@
 
 ## 参考边界
 
-2026-11-25 查阅了 [ChatGPT Android 官方商店页](https://play.google.com/store/apps/details?id=com.openai.chatgpt)和 [OpenAI 移动客户端说明](https://help.openai.com/en/articles/8142208-using-the-chatgpt-mobile-app-classic-experience)，未在这些页面找到按版本公开的运行依赖清单。[OpenAI 的 ChatGPT Android 岗位说明](https://openai.com/careers/android-engineer-chatgpt-library-team-seattle/)提到 Kotlin 和 Jetpack Compose，这是工程方向的参考，不是当前 APK 的依赖证明。本记录不把候选库归因于 ChatGPT，也不从界面外观推断内部实现。
+2026-11-25 查阅了 [ChatGPT Android 商店页](https://play.google.com/store/apps/details?id=com.openai.chatgpt)和 [OpenAI 移动客户端说明](https://help.openai.com/en/articles/8142208-using-the-chatgpt-mobile-app-classic-experience)，未在这些页面找到按版本公开的运行依赖清单。[OpenAI 的 ChatGPT Android 岗位说明](https://openai.com/careers/android-engineer-chatgpt-library-team-seattle/)提到 Kotlin 和 Jetpack Compose，这是工程方向的参考，不是当前 APK 的依赖证明。本记录不把候选库归因于 ChatGPT，也不从界面外观推断内部实现。
+
+同日另查阅第三方示例 [skydoves/chatgpt-android](https://github.com/skydoves/chatgpt-android) 的 [README](https://github.com/skydoves/chatgpt-android/blob/main/README.md) 和 [app/build.gradle.kts](https://github.com/skydoves/chatgpt-android/blob/main/app/build.gradle.kts)。该仓库自述为演示项目，许可证为 Apache-2.0；它使用 Kotlin、Jetpack Compose、Stream Chat SDK，并列有 Hilt、Room、WorkManager 等组件。它不是 OpenAI 官方 ChatGPT 客户端的依赖清单。Serein 只把其架构分层和组件取舍作为阅读材料：现有 Java Views、OpenAI 兼容服务商 SSE、自管对话记录不需要 Stream Chat 服务或整体 Compose/Hilt 改造，因此本轮不移植示例代码，也不新增依赖。选择器、表单和消息呈现继续使用项目现有 `UiKit`、Material Views 与 CommonMark；后续只有具体缺陷及基线证明必要时再评估单项库。
 
 ## 当前决定
 
