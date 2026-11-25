@@ -1,21 +1,25 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 param(
     [Parameter(Mandatory)][ValidatePattern('^emulator-[0-9]+$')][string[]]$Serial,
     [Parameter(Mandatory)][string]$Baseline,
     [Parameter(Mandatory)][string]$Candidate,
     [string]$SdkDir = (Join-Path $env:LOCALAPPDATA 'Android/Sdk'),
+    [switch]$CheckStream,
     [ValidatePattern('^https://[a-zA-Z0-9.\-]+(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._~/\-]*)?$')][string]$LiveBase,
     [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9._:/\-]{0,127}$')][string]$LiveModel,
     [ValidateRange(2, 12)][int]$LiveRounds = 6
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'qa/build-release-helper.ps1')
 $adb = (Get-Command adb).Source
 $tools = Join-Path $SdkDir 'build-tools/35.0.0'
 $package = 'app.serein.chat'
+$helper = 'app.serein.historyqa'
 $stamp = [guid]::NewGuid().ToString('N').Substring(0, 10)
 $dump = "/data/local/tmp/serein-$stamp-upgrade.xml"
 if ([bool]$LiveBase -ne [bool]$LiveModel) { throw 'LiveBase and LiveModel must be supplied together' }
+if ($CheckStream -and $LiveBase) { throw 'Use either -CheckStream (offline) or -LiveBase and -LiveModel' }
 if ($LiveBase) { $LiveBase = $LiveBase.TrimEnd('/') }
 
 function Apk([string]$path) {
@@ -121,69 +125,48 @@ function Open-ProviderSettings {
     Tap '服务商连接'
 }
 
-function Wait-LiveReply([string]$expected, [string]$pidBefore, [switch]$Rich) {
-    $observedPartial = $false
-    $timer = [Diagnostics.Stopwatch]::StartNew()
-    do {
-        $ui = Screen
-        $texts = @($ui.SelectNodes("//node[@package='$package' and @class='android.widget.TextView']") |
-            ForEach-Object text)
-        $failure = $texts | Where-Object {
-            $_ -match '^(服务商(拒绝访问|返回 HTTP|限流|暂时繁忙)|无法验证 HTTPS|无法找到服务商|连接超时|请求失败|回复未完成|模型.*上限|模型没有返回)'
-        } | Select-Object -First 1
-        if ($failure) { throw "Online reply on $deviceSerial did not complete: $failure" }
-        $reply = $texts | Where-Object { $_ -ceq $expected -or ($Rich -and $_ -like "*$expected*" -and $_ -notlike 'Write a Markdown*') }
-        $busy = Find-Node $ui '停止生成'
-        if ($busy -and $reply) { $observedPartial = $true }
-        $composer = Find-Node $ui '发消息' 'android.widget.EditText'
-        if ($reply -and $composer.enabled -eq 'true' -and !$busy) {
-            if ((Device shell pidof $package).Trim() -ne $pidBefore) { throw 'Serein process changed during live chat' }
-            return $observedPartial
-        }
-        Start-Sleep -Milliseconds 250
-    } while ($timer.Elapsed.TotalSeconds -lt 90)
-    throw "No complete online reply on $deviceSerial"
+function Test-ReplyUi([string]$mode, [int]$turn, [string]$recipient = '') {
+    $options = @('-e', 'mode', $mode, '-e', 'marker', "SEREIN-QA-$stamp-$turn")
+    if ($recipient) { $options += @('-e', 'recipient', $recipient) }
+    $result = @(Device shell am instrument -w -r @options "$helper/.ReleaseReply")
+    $result | Add-Content -LiteralPath (Join-Path $qaDir "$deviceSerial-reply.txt") -Encoding utf8
+    $pass = @($result | Where-Object { $_.StartsWith("RELEASE_REPLY_PASS $mode;") })
+    $digest = @($result | Select-String '^INSTRUMENTATION_RESULT: reply_sha256=([0-9a-f]{64})$')
+    if ($pass.Count -ne 1 -or $digest.Count -ne 1 -or $result -notcontains 'INSTRUMENTATION_CODE: -1') {
+        $failure = $result | Where-Object { $_ -like 'RELEASE_REPLY_FAIL*' } | Select-Object -First 1
+        throw "Reply QA on $deviceSerial ($mode) did not pass. $failure Evidence: $qaDir"
+    }
+    Write-Host "${deviceSerial}: $($pass[0])"
+    $digest[0].Matches[0].Groups[1].Value
 }
 
-function Send-LiveBatch([string]$provider, [string]$modelTitle) {
+function Test-DemoStream {
+    $appPid = (Device shell pidof $package).Trim()
+    $null = Test-ReplyUi 'final-only' 1
+    $lastDigest = Test-ReplyUi 'demo' 2
+    if ((Device shell pidof $package).Trim() -ne $appPid) { throw 'Serein process changed during the offline stream' }
+    Device shell am force-stop $package | Out-Null
+    Start-App
+    if ((Test-ReplyUi 'restore-demo' 2) -cne $lastDigest) { throw 'Offline streamed reply changed after restart' }
+}
+
+function Send-LiveBatch([string]$modelTitle) {
     Tap '选择模型，当前 离线演示'
     Tap $modelTitle
     Wait-Node "选择模型，当前 $modelTitle" | Out-Null
     $appPid = (Device shell pidof $package).Trim()
-    $streamObserved = $false
-    $last = ''
     for ($turn = 1; $turn -le $LiveRounds; $turn++) {
-        $last = "SEREIN-QA-$stamp-$turn"
-        $rich = $turn -eq 3
-        $prompt = if ($rich) {
-            "Write a Markdown list of 35 tiny test items. Start with the heading $last and use no links."
-        } else {
-            "Reply with exactly $last and nothing else."
-        }
-        Type-Field '发消息' $prompt
-        Tap '发送'
-        if ($turn -eq 1) {
-            Wait-Node "发送给 $provider" | Out-Null
-            if (!(Screen).OuterXml.Contains($LiveBase + '/chat/completions')) { throw 'Unexpected disclosed recipient' }
-            Tap '取消'
-            Wait-Node $prompt 'android.widget.EditText' | Out-Null
-            Tap '发送'
-            Wait-Node "发送给 $provider" | Out-Null
-            Tap '发送'
-        }
-        if ($rich) {
-            Device shell input keyevent KEYCODE_HOME | Out-Null
-            Start-Sleep -Milliseconds 800
-            Device shell am start -W -n "$package/.MainActivity" | Out-Null
-        }
-        if (Wait-LiveReply $last $appPid -Rich:$rich) { $streamObserved = $true }
+        $mode = if ($turn -eq $LiveRounds) { 'rich' } else { 'short' }
+        $recipient = if ($turn -eq 1) { $LiveBase + '/chat/completions' } else { '' }
+        $lastDigest = Test-ReplyUi $mode $turn $recipient
+        if ((Device shell pidof $package).Trim() -ne $appPid) { throw 'Serein process changed during live chat' }
         "PASS: $deviceSerial live reply $turn/$LiveRounds"
     }
     Device shell am force-stop $package | Out-Null
     Start-App
     Wait-Node "选择模型，当前 $modelTitle" | Out-Null
-    $null = Wait-LiveReply $last (Device shell pidof $package).Trim() -Rich:($LiveRounds -eq 3)
-    "PASS: $deviceSerial completed $LiveRounds real replies with the upgraded Key and retained the last reply after restart; UI partial observed: $streamObserved"
+    if ((Test-ReplyUi 'restore' $LiveRounds) -cne $lastDigest) { throw 'Online streamed reply changed after restart' }
+    "PASS: $deviceSerial completed $LiveRounds real replies, observed in-flight growth and retained the last reply after restart"
 }
 
 function PackageState {
@@ -197,13 +180,19 @@ function PackageState {
 function Test-Upgrade([string]$deviceSerial) {
     $name = Device emu avd name | Select-Object -First 1
     if ($name -notmatch '^SereinBeta(?:33|37)$' -or (Device shell getprop ro.kernel.qemu) -ne '1' -or
-        (Device shell pm list packages $package)) { throw 'Use a fresh disposable SereinBeta33 or SereinBeta37 emulator; will not touch an existing installation' }
+        (Device shell pm list packages $package) -or ($qaApk -and (Device shell pm list packages $helper))) {
+        throw 'Use a fresh disposable SereinBeta33 or SereinBeta37 emulator with no Serein or QA helper installed; will not replace an existing installation'
+    }
+    if ($qaApk -and (Device shell settings get secure accessibility_enabled) -eq '1') {
+        throw 'Use a disposable emulator with accessibility services off'
+    }
     $marker = "Upgrade-$stamp"
     $provider = 'Serein Upgrade Fixture'
     $fixtureBase = if ($LiveBase) { $LiveBase } else { 'https://example.invalid/v1' }
     $fixtureModel = if ($LiveModel) { $LiveModel } else { 'serein-upgrade-model' }
     $keyLabel = if ($LiveBase) { 'Disposable online QA Key' } else { 'Synthetic upgrade key' }
     $started = $false
+    $helperInstalled = $false
     try {
         $beforeFaults = Device logcat -b events -d -v threadtime -s 'am_anr:I' 'am_crash:I' | Where-Object { $_ -match '\bapp\.serein\.chat(?:,|\])' }
         Device shell input keyevent KEYCODE_WAKEUP | Out-Null
@@ -262,13 +251,23 @@ function Test-Upgrade([string]$deviceSerial) {
         Device shell am force-stop $package | Out-Null
         Start-App
         Wait-OfflineReply "$marker-after"
-        if ($LiveBase) { Send-LiveBatch $provider $modelTitle }
+        if ($qaApk) {
+            Device install --no-incremental $qaApk
+            $helperInstalled = $true
+            $helperVersion = (Device shell dumpsys package $helper) | Select-String 'versionName=([^\s]+)' | Select-Object -First 1
+            if (!$helperVersion -or $helperVersion.Matches[0].Groups[1].Value -cne '1') {
+                throw 'The reply instrumentation helper was not freshly installed for this run.'
+            }
+            if ($LiveBase) { Send-LiveBatch $modelTitle }
+            else { Test-DemoStream }
+        }
         $faults = Device logcat -b events -d -v threadtime -s 'am_anr:I' 'am_crash:I' | Where-Object {
             $_ -match '\bapp\.serein\.chat(?:,|\])' -and $_ -notin $beforeFaults
         }
         if ($faults) { throw 'New application crash or ANR during the upgrade' }
         "PASS: $deviceSerial API $(Device shell getprop ro.build.version.sdk) kept install identity, existing chat, provider/model and key entry; new reply survived restart"
     } finally {
+        if ($helperInstalled) { Device uninstall $helper | Out-Null }
         if ($started) { Device uninstall $package | Out-Null }
         Device shell rm -f $dump | Out-Null
     }
@@ -281,7 +280,10 @@ if ($from.Signer -ne $to.Signer -or $from.Code -ge $to.Code) { throw 'Upgrade mu
 "Candidate: $($to.Name) SHA-256 $($to.Hash)"
 "Verified signer SHA-256 $($to.Signer)"
 
+$qaDir = Join-Path $PSScriptRoot "../outputs/beta-qa/signed-reply-$stamp"
+$qaApk = if ($CheckStream -or $LiveBase) { New-ReleaseQaHelper $SdkDir $qaDir }
 $liveKey = if ($LiveBase) { Read-Host 'Disposable QA provider Key' -AsSecureString }
 try {
     foreach ($deviceSerial in $Serial) { Test-Upgrade $deviceSerial }
+    if ($qaApk) { "Reply QA evidence: $qaDir" }
 } finally { if ($liveKey) { $liveKey.Dispose() } }

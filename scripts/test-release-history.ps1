@@ -8,10 +8,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+. (Join-Path $PSScriptRoot 'qa/build-release-helper.ps1')
 $adb = (Get-Command adb).Source
 $tools = Join-Path $SdkDir 'build-tools/35.0.0'
-$platform = Join-Path $SdkDir 'platforms/android-36/android.jar'
-$source = Join-Path $PSScriptRoot 'qa/release-history'
 $app = 'app.serein.chat'
 $helper = 'app.serein.historyqa'
 $stamp = [guid]::NewGuid().ToString('N')
@@ -36,23 +35,7 @@ if (!($badging -match "^package: name='app\.serein\.chat'") -or
     throw 'Candidate must be the non-debuggable Serein APK.'
 }
 $digest = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
-$classes = Join-Path $out 'classes'
-$dex = Join-Path $out 'dex'
-New-Item -ItemType Directory -Path $classes, $dex | Out-Null
-$unsigned = Join-Path $out 'helper-unsigned.apk'
-$signed = Join-Path $out 'helper.apk'
-$buildKey = Join-Path $out 'fixture.p12'
-
-& javac --release 11 -encoding UTF-8 -cp $platform -d $classes (Join-Path $source 'ReleaseHistory.java')
-$classFiles = @(Get-ChildItem -LiteralPath $classes -Recurse -Filter '*.class' | ForEach-Object FullName)
-& (Join-Path $tools 'd8.bat') --min-api 33 --lib $platform --output $dex @classFiles
-& (Join-Path $tools 'aapt.exe') package -f -M (Join-Path $source 'AndroidManifest.xml') -I $platform -F $unsigned
-Push-Location -LiteralPath $dex
-try { & (Join-Path $tools 'aapt.exe') add $unsigned classes.dex }
-finally { Pop-Location }
-& keytool -genkeypair -alias fixture -keyalg RSA -keysize 2048 -validity 2 -dname 'CN=Serein History QA' `
-    -storetype PKCS12 -keystore $buildKey -storepass only-local-qa
-& (Join-Path $tools 'apksigner.bat') sign --ks $buildKey --ks-pass pass:only-local-qa --out $signed $unsigned
+$signed = New-ReleaseQaHelper $SdkDir $out
 
 $installed = $false
 $helperInstalled = $false
