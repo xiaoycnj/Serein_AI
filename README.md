@@ -114,6 +114,8 @@ adb install -r .\outputs\Serein-Alpha-0.0.25.apk
 
 发行打包使用 `./scripts/build-alpha.ps1 -RunChatTests -Release`，输出到 `outputs/release/`。构建需要仓库外的签名库（别名 `serein-release`）；通过 `SEREIN_RELEASE_KEYSTORE` 和 `SEREIN_RELEASE_STORE_PASS` 提供路径和密码。
 
+覆盖升级使用 `./scripts/test-signed-upgrade.ps1 -Serial emulator-5584 -Baseline <旧版签名APK> -Candidate <候选签名APK>`。测试仅在未安装 Serein 的专用 Beta 模拟器运行。传入 `-LiveBase` 和 `-LiveModel` 可用临时 Key 追加小批量在线发送检查，默认每台 6 轮；Key 只通过掩码提示输入，遇到连接或回复错误就停止。在升级前保存临时 Key，升级后核对接收方、发送回复和冷启动回读，结束后卸载测试安装。此模式需要可访问的 HTTPS 服务商与有效授权。
+
 在未安装 Serein、未开启无障碍服务的专用 `SereinBeta33` 或 `SereinBeta37` 模拟器上，可用 PowerShell 7.3+ 验证签名发行包的长会话：
 
 ```powershell

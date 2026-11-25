@@ -15,7 +15,7 @@
 | 聊天界面 | 已验收 | 对齐消息与输入区，补齐等待、生成和保存提示，将断流原因与重试放在同一区域 | 对照 `1e8812c` 的截图，覆盖 Android 13 浅色与 Android 17 深色、320 dp 宽、1.45 倍字号、动画关闭；两台模拟器均重跑完整发送回归 |
 | 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab 和关闭后焦点恢复；另验证应用侧滑、实际启用的系统边缘返回及 TalkBack 焦点显示。Google Play TalkBack 逐项播报尚未验收 |
 | Alpha 0.0.26 | 签名构建及覆盖升级通过，待发布 | 打开模型选择器后将初始键盘焦点交给搜索框；保留模型面板的系统截图保护 | Android 13、17 隔离回归矩阵及长历史检查通过；`:app:chatChecks` 通过。两台模拟器均从公开的 0.0.25 覆盖升级到同一份 0.0.26 签名 APK |
-| 下一轮 · Beta 候选 | 签名升级与长历史通过，读屏验收中 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 同一签名 APK 通过覆盖升级和 1,200 轮会话及导出；Google Play 版 TalkBack 已核对部分语音文本及返回焦点，仍需完整逐项读屏。Markdown 文件仅用于阅读和归档 |
+| 下一轮 · Beta 候选 | 签名升级、长历史与读屏导航已验证 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 同一签名 APK 通过覆盖升级和 1,200 轮会话及导出；Google Play 版 TalkBack 通过侧栏与模型面板的主要控件顺序遍历及返回焦点。中文音频仍待逐项听测；真实服务商发送未完成。Markdown 文件仅用于阅读和归档 |
 
 ## 每轮交付规则
 
@@ -23,7 +23,7 @@
 2. 跑 `:app:chatChecks` 和受影响的模拟器回归。改 UI 时保留前后对照；涉及安装时核对 APK 版本、签名和大小。用合成消息验证，不将 Key、聊天数据或原始设备日志提交到仓库。
 3. 记录已通过、未覆盖和已知限制，提交当前轮的相关改动，推送 `xiaoycnj/Serein_AI` 后核对远端 SHA。推送源码不等于发布 APK；发应用内更新时，另验 GitHub 发行资产的版本、签名和摘要。
 
-参考产品时，记录来源、观察日期、交互证据和 Serein 的取舍。不从截图推断内部实现或性能，也不复制专有代码、品牌素材和整套界面。复用开源代码或素材前，按具体版本核对许可证、保留署名及必要声明；优先选 MIT、CC0 或其他可兼容且义务清楚的资源。没有授权的实现只研究可见行为，由 Serein 独立实现。
+参考产品时，记录来源、观察日期、交互证据和 Serein 的取舍。不从截图推断内部实现或性能，也不复制专有代码、品牌素材和整套界面。复用开源代码或素材前，按具体版本核对许可证、保留署名及必要声明；优先选 MIT、CC0 或其他可兼容且义务清楚的资源。依赖范围和候选的取舍见[开源依赖记录](DEPENDENCIES.md)。没有授权的实现只研究可见行为，由 Serein 独立实现。
 
 聊天界面轮参考 [Apple HIG 的排版层级](https://developer.apple.com/design/human-interface-guidelines/typography)和 [Android Views 无障碍指南](https://developer.android.com/guide/topics/ui/accessibility/views/apps-views)，保留原有字体、主题偏好和 48 dp 图标触控区。对照截图用合成回复采集，保存在本地 `outputs/chat-regression/`；长模型名顶栏省略和模型配置表单不在本轮改动范围内。
 
@@ -50,6 +50,13 @@
 - 在 API 33 的专用模拟器运行 [发行包长会话脚本](../scripts/test-release-history.ps1)：`./scripts/test-release-history.ps1 -Serial emulator-5584 -Candidate ./outputs/release/Serein-Alpha-0.0.26.apk`。设备上的 APK 与覆盖升级所用文件的 SHA-256 相同。独立测试助手通过输入框和发送按钮完成 1,200 轮合成离线对话，不连接服务商，不修改发行包，不写入应用私有目录。
 - 从消息目录定位第一轮，回到最新，搜索并定位第 1,171 轮，前后翻页，再冷启动回读第 1,200 轮。Markdown 导出为 100,822 字节，按顺序逐条核对全部 1,200 条提问和 1,200 条回复，未观察到新增 Serein 崩溃或 ANR。收据位于本机 `outputs/release-history/5b6ebf702494461fa94847575534bfd1/`；旧格式迁移、密集 Markdown 与在线断流另由隔离包用例覆盖。
 - 同一 APK 的 Google Play 版 TalkBack 输出浮层已记录「会话, Button」「选择模型，当前 离线演示」与「发消息」。开启侧栏焦点落在关闭按钮；关闭侧栏及模型面板后分别回到会话按钮和模型入口。安全模型面板只核对系统窗口标记与可访问性节点，未尝试截取面板。浮层是 [TalkBack 的语音输出文本](https://developer.android.com/guide/topics/ui/accessibility/testing)，不是录音；侧栏与模型面板内的顺序遍历及逐项听测仍待完成。当前未发布 0.0.26。
+
+### 2026-11-25 · 在线探针与 TalkBack 顺序导航
+
+- 对同一份签名候选包，在 API 33 覆盖安装后使用升级前录入的临时 Key 启动在线批测。验证了接收方确认与取消后保留草稿；确认发送后，应用显示「无法找到服务商地址」，两台测试模拟器均无法解析该服务商域名。Windows 的带授权 `/models` 请求、以及首个用于批测的 `/chat/completions` 请求返回 HTTP 403，后者错误标识为 `new_api_error`。没有成功的在线回复，未继续发送；响应不能区分 Key、模型权限或网关策略。临时测试安装已卸载。
+- [覆盖升级脚本](../scripts/test-signed-upgrade.ps1)增加可选的 `-LiveBase`、`-LiveModel` 和 `-LiveRounds`，通过掩码输入临时 Key，遇到首次连接或回复错误就停止。默认离线路径复跑：API 33、37 均通过签名匹配、安装身份、会话与配置保留以及重启回读；`:app:chatChecks` 的 14 组检查通过。真实服务商恢复后再复核升级后 Key 的实际可用性。
+- 同一 APK 在 Google Play API 33、TalkBack `14.2.0.618048417` 上通过虚拟触屏真实左右滑。侧栏验证搜索、关闭、新建、归档、会话及选项、资料库、账号、设置的焦点和 TalkBack 送出的语音文本；模型面板验证搜索框、服务商设置、关闭、当前离线模型及退出后回到模型入口。面板始终保留 `FLAG_SECURE`，面板内只记录无障碍事件和音频，未截图。
+- [本地 QA 手势和录音助手](../scripts/qa/talkback-emulator.cjs)仅连接启用令牌认证的专用 `SereinPlay33` 模拟器本机 gRPC 端口。使用随模拟器提供的 `emulator_controller.proto`、`@grpc/grpc-js@1.14.3` 和 `@grpc/proto-loader@0.8.0`。复测时按 [Android 读屏测试指引](https://developer.android.com/guide/topics/ui/accessibility/testing)启用 TalkBack 详细日志，再用助手的 `explore`、`activate`、`next`、`previous` 导航，使用 `capture` 单独采集设备 PCM。收据在本机 `outputs/beta-qa/google-play/`，侧栏与模型面板录音分别为 32.18 秒和 26.00 秒。已核对文本、角色和录音非静音；没有核对每句普通话的清晰度，不能以录音文件存在代替听测。0.0.26 仍未发布。
 
 ## 历次改进
 
