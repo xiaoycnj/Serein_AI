@@ -97,12 +97,22 @@ function Start-App {
     Wait-Node '发消息' 'android.widget.EditText' | Out-Null
 }
 
+function Wait-OfflineReply([string]$text) {
+    for ($i = 0; $i -lt 8; $i++) {
+        $ui = Screen
+        $prompt = Find-Node $ui $text 'android.widget.TextView'
+        $composer = Find-Node $ui '发消息' 'android.widget.EditText'
+        if ($prompt -and $composer.enabled -eq 'true' -and !(Find-Node $ui '停止生成') -and
+            $prompt.SelectSingleNode("following::node[@package='$package' and @class='android.widget.TextView' and @text='收到。这是一条离线演示回复。']")) { return }
+    }
+    throw "Expected a complete offline reply after $text on $deviceSerial"
+}
+
 function Send-Offline([string]$text) {
     Wait-Node '选择模型，当前 离线演示' | Out-Null
     Type-Field '发消息' $text
     Tap '发送'
-    Wait-Node $text | Out-Null
-    Wait-Node '收到。这是一条离线演示回复。' | Out-Null
+    Wait-OfflineReply $text
 }
 
 function Open-ProviderSettings {
@@ -237,9 +247,8 @@ function Test-Upgrade([string]$deviceSerial) {
             throw 'Installed build does not match the candidate APK'
         }
         Start-App
-        Wait-Node $marker | Out-Null
-        Wait-Node "$marker-followup" | Out-Null
-        Wait-Node '收到。这是一条离线演示回复。' | Out-Null
+        Wait-Node $marker 'android.widget.TextView' | Out-Null
+        Wait-OfflineReply "$marker-followup"
         Open-ProviderSettings
         Tap $provider
         Wait-Node $fixtureBase | Out-Null
@@ -252,7 +261,7 @@ function Test-Upgrade([string]$deviceSerial) {
         Send-Offline "$marker-after"
         Device shell am force-stop $package | Out-Null
         Start-App
-        Wait-Node "$marker-after" | Out-Null
+        Wait-OfflineReply "$marker-after"
         if ($LiveBase) { Send-LiveBatch $provider $modelTitle }
         $faults = Device logcat -b events -d -v threadtime -s 'am_anr:I' 'am_crash:I' | Where-Object {
             $_ -match '\bapp\.serein\.chat(?:,|\])' -and $_ -notin $beforeFaults

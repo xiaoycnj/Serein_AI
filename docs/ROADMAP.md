@@ -13,9 +13,9 @@
 | 0.0.25 · 发送稳定性 | 签名预发行版已发布 | 密集 Markdown 回复用纯文本预览，历史、复制和导出保留原文 | Android 13 重放已复现卡死的 18,000 段回复，确认无新增应用崩溃或 ANR，能操作、冷启动回读和完整导出；Android 17 用在线测试服务商连续发送并验证恢复 |
 | 发送回归基线 | 已验收 | 用[独立测试包](../scripts/test-chat-regression.ps1)重放发送、断流、停止、重试与恢复 | Android 13、17 模拟器均通过：核对每台 8 个预期请求、取消时零请求、断流和重试保留版本与独立草稿、冷启动回读，无新增 Serein 崩溃或 ANR。在线服务商冒烟测试单独记录 |
 | 聊天界面 | 已验收 | 对齐消息与输入区，补齐等待、生成和保存提示，将断流原因与重试放在同一区域 | 对照 `1e8812c` 的截图，覆盖 Android 13 浅色与 Android 17 深色、320 dp 宽、1.45 倍字号、动画关闭；两台模拟器均重跑完整发送回归 |
-| 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab 和关闭后焦点恢复；另验证应用侧滑、实际启用的系统边缘返回及 TalkBack 焦点显示。Google Play TalkBack 逐项播报尚未验收 |
-| Alpha 0.0.26 | 签名构建及覆盖升级通过，待发布 | 打开模型选择器后将初始键盘焦点交给搜索框；保留模型面板的系统截图保护 | Android 13、17 隔离回归矩阵及长历史检查通过；`:app:chatChecks` 通过。两台模拟器均从公开的 0.0.25 覆盖升级到同一份 0.0.26 签名 APK |
-| 下一轮 · Beta 候选 | 签名升级、长历史与读屏导航已验证；发行验收未关闭 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | 同一签名 APK 通过 Android 13、17 覆盖升级和 1,200 轮会话及导出；Google Play 版 TalkBack 已验证主要控件遍历与焦点返回。普通话逐项听测和真实服务商成功回复尚未通过，不能据此发布 0.0.26。Markdown 文件仅用于阅读和归档 |
+| 导航与无障碍 | 已验证主要路径 | 保留长表单的保存/取消栏，改进窄屏标题、横屏侧栏、版本按钮排布及读屏与键盘焦点恢复 | Android 13、17 模拟器验证模型表单在 IME 开启时保存、横屏导航、连续 Tab、应用侧滑及系统边缘返回。Android 13 的 Google Play 版 TalkBack 验证了侧栏和模型面板的主要焦点；普通话逐项听测仍待完成 |
+| Alpha 0.0.26 | 签名构建及覆盖升级通过，未发布 | 打开模型选择器后将初始键盘焦点交给搜索框；保留模型面板的系统截图保护 | Android 13、17 隔离回归矩阵及长历史检查通过；`:app:chatChecks` 通过。两台模拟器均从公开的 0.0.25 覆盖升级到同一份 0.0.26 签名 APK，并冷启动回读升级后新发的消息和回复 |
+| 下一轮 · Beta 候选 | 签名升级、长历史与读屏导航已验证；发行验收未关闭 | 汇总稳定性、长历史、覆盖升级和可访问性证据，评估是否达到候选版门槛 | Android 13、17 各用同一签名 APK 完成 1,200 轮离线会话及导出；Google Play 版 TalkBack 已验证主要控件遍历与焦点返回。普通话逐项听测和真实服务商批测仍待完成，不能据此发布 0.0.26。Markdown 文件仅用于阅读和归档 |
 
 ## 每轮交付规则
 
@@ -43,7 +43,7 @@
 - 从 `79e0a46e7e18e67e1267d6e7d27a6239fb9d2a49` 运行 `./scripts/build-alpha.ps1 -Release -RunChatTests`。14 组检查通过，签名 APK 生成于 `outputs/release/Serein-Alpha-0.0.26.apk`。包名为 `app.serein.chat`，最低 API 为 33，版本名为 `0.0.26-alpha`，版本码为 26，大小为 11,751,609 字节。APK 的 SHA-256 为 `86f0bb7839e6c1376e1bd0797054cd4491a6889886cb1a33c496f30d20e585d6`，证书 SHA-256 为 `8b5084d9f82a15eb059adb277671b8ec8cfbb1897d0eeddbc40fba81a70a8894`，与 0.0.25 一致。
 - 将公开发行的 `Serein-Alpha-0.0.25.apk` 放入 `outputs/release/`，核对下方历史记录中的摘要，并运行 `./scripts/test-signed-upgrade.ps1 -Serial @('emulator-5584','emulator-5586') -Baseline ./outputs/release/Serein-Alpha-0.0.25.apk -Candidate ./outputs/release/Serein-Alpha-0.0.26.apk`。Android 13、17 均保留原安装标识、两轮聊天、服务商、模型和 Key 条目，新增离线回复在冷启动后仍可读，测试窗口内无新增 Serein 崩溃或 ANR。此路径覆盖 Key 条目的持久化，使用升级后的 Key 向服务商发请求仍待验证。
 - 在 Google Play API 33 模拟器安装相同摘要的签名 APK。TalkBack `14.2.0.618048417` 开启触摸探索，侧栏打开后截图记录到「关闭侧栏」按钮取得无障碍焦点；设备日志同时记录到 TalkBack 请求音频焦点和 TTS 合成。逐项标签、实际播报内容以及关闭侧栏或模型面板后的读屏焦点仍待完整核对。
-- 1,200 轮历史用例通过 `run-as` 为 `.chatqa` 注入合成记录。发行包需通过聊天流程生成测试历史，再复核翻页、搜索、重启和导出。0.0.26 发行资产等待候选验收。
+- 1,200 轮历史用例通过 `run-as` 为 `.chatqa` 注入合成记录。发行包的独立用例通过聊天界面生成历史，验收记录见下节。0.0.26 发行资产等待候选验收。
 
 ### 2026-11-25 · 签名包长会话验收
 
@@ -60,11 +60,11 @@
 
 ### 2026-11-25 · Alpha 0.0.26 候选复验
 
-- 当前源码基点为 `fcbb4b4e3b5588a28f0466039c9eec0667bf19b8`。签名候选 APK 为 `11,751,609` 字节，SHA-256 `86f0bb7839e6c1376e1bd0797054cd4491a6889886cb1a33c496f30d20e585d6`；发行证书 SHA-256 `8b5084d9f82a15eb059adb277671b8ec8cfbb1897d0eeddbc40fba81a70a8894`。在专用 API 37 模拟器重新执行 0.0.25 到 0.0.26 的签名覆盖升级：脚本报告保留安装标识、已有会话与服务商/model/Key 条目，重启后仍可读回升级后消息。API 33 Play 镜像里的已安装 APK SHA-256 与候选完全一致。
-- `./gradlew.bat :app:chatChecks --offline` 于本机复跑通过，包含 14 组聊天、Markdown、SSE、存储、控件和工具检查；API 33/37 的发行包历史验收仍由 `outputs/release-history/5b6ebf702494461fa94847575534bfd1/` 及此前登记的签名升级记录支撑。
-- 为核对中文读屏，将 Google TTS 设为 `zh-CN` 后，在官方 Google Play TalkBack 14.2.0.618048417 导航时捕获 PCM；系统事件记录 `zho-CHN` 合成成功，且录音包含非静音信号。但本机中文识别未能辨认侧栏焦点标签，原始低音量录音不足以证明听懂了具体控件。因此中文逐项朗读和可懂度仍属未验收，不把合成成功当作朗读质量通过。收据保存在忽略于 Git 的 `outputs/beta-qa/google-play/`。
-- 使用本轮提供的临时 KenAPI Key 对 `https://hk.kenapi.kenshi.download/v1/models` 发出带授权 HTTPS 请求，实测 HTTP `403`。既有批测也没有取得一条在线成功回复，不能据此归因到 Key、模型权限或服务策略，更不能发布 0.0.26。待授权网关能成功返回目标模型并完成一次签名包对话、流式呈现与重启回读后再关闭在线门槛；测试 Key 不写入仓库或 QA 收据。
-- GitHub API 现场确认 `main` 仍为 `fcbb4b4e3b5588a28f0466039c9eec0667bf19b8`，本次改动只更新此验收记录。`0.0.26-alpha` 仍是未发布候选；源码推送和 Beta 门槛通过是两件事。
+- 仍使用从 `79e0a46e7e18e67e1267d6e7d27a6239fb9d2a49` 构建的 0.0.26 签名候选。在 `SereinBeta33` 和 `SereinBeta37` 重跑 [覆盖升级脚本](../scripts/test-signed-upgrade.ps1)。两台均保留安装标识、既有消息及服务商、模型和 Key 条目。脚本现在要求指定提问之后存在回复、生成已结束、输入框可用，并在冷启动后重验升级后最新一轮，避免把较早的同文离线回复当作新回复。测试期间无新增 Serein 崩溃或 ANR，专用模拟器上的测试安装已卸载。收据：`outputs/beta-qa/api33-signed-ebd59d23a19243fea3ffc29e5b4cb2a1/`、`outputs/beta-qa/api37-signed-5804d7ec6b4846aab2b882b2c3214dfc/`。
+- 两台分别运行 `./scripts/test-release-history.ps1 -Serial emulator-5584 -Candidate ./outputs/release/Serein-Alpha-0.0.26.apk` 和同命令的 `-Serial emulator-5586` 版本。每台通过 1,200 轮 UI 离线发送、目录、搜索、分页和冷启动回读，并按顺序核对 1,200 组提问与回复；每份导出为 100,822 字节，无新增 Serein 崩溃或 ANR。收据分别位于 `outputs/release-history/5b6ebf702494461fa94847575534bfd1/`（API 33）和 `outputs/release-history/9c228af0d9ca4e55acc02d02dd1d6dfc/`（API 37）。`./gradlew.bat :app:chatChecks --offline` 的 14 组检查也通过。
+- Google Play API 33 模拟器上的 APK 与候选摘要一致。将 Google TTS 临时设为 `zh-CN`，用 TalkBack `14.2.0.618048417` 重走侧栏焦点，分别采集五段录音。系统事件记录 `zho-CHN` 合成成功，但录音归一化后的离线识别仍不能可靠核对控件标签。语音可懂度需人工逐项听测，不能用合成成功或焦点记录替代。测试后恢复 TTS 设置；本机收据为 `outputs/beta-qa/google-play/mandarin-focus-af76c065a4b14405b280242d461ab2bb/`。
+- 在线门槛仍未通过。Windows 上带授权的 `/models` 和 `/chat/completions` 返回 HTTP `403`，两台模拟器未能解析测试服务商域名，没有取得在线成功回复；现有证据不能区分 Key、模型权限和网关策略。换用模拟器可达且明确授权的服务商，通过升级脚本的 `-LiveBase`、`-LiveModel`、`-LiveRounds`（默认 6 轮）验证升级后 Key 的实际使用，检查接收方确认、真实连续回复、流式呈现、切回应用和冷启动回读。测试 Key 通过掩码提示录入，不写入仓库或 QA 收据。
+- 本轮只改 QA 脚本和验收记录，未变更 APK 或发行依赖。真实服务商批测和普通话听测未完成，`0.0.26-alpha` 仍未发布。
 
 ## 历次改进
 
